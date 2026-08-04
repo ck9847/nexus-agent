@@ -1,0 +1,35 @@
+# IntelliJ IDEA
+.idea/
+*.iml
+out/
+
+# Java
+target/
+*.class
+*.jar
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+
+# Operating system
+.DS_Store
+Thumbs.db
+
+# Obsidian
+.obsidian/
+
+# VS Code personal settings
+.vscode/
