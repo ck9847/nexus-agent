@@ -19,4 +19,12 @@
 
     <name>NexusAgent Ticket</name>
 
+    <dependencies>
+        <dependency>
+            <groupId>com.nexusagent</groupId>
+            <artifactId>nexus-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+    </dependencies>
+
 </project>
