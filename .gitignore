@@ -33,3 +33,6 @@ Thumbs.db
 
 # VS Code personal settings
 .vscode/
+
+# Local AI tool settings
+.claude/
