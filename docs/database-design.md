@@ -80,3 +80,105 @@ erDiagram
 8. messages
 9. tool_executions
 10. audit_logs
+
+## 全局字段规范
+
+- 字符集：utf8mb4
+- 主键类型：BIGINT，由应用程序生成
+- 时间类型：DATETIME(3)，统一保存 UTC
+- 金额禁止使用 FLOAT 或 DOUBLE
+- 密码只保存哈希结果
+- 业务数据原则上不物理删除，通过状态字段停用
+- version 用于乐观锁，初始值为 0
+- JSON 只用于结构不稳定的扩展数据
+- API 密钥等机密信息禁止明文存入数据库
+
+### tenants
+
+租户表，是所有业务数据的隔离边界。
+
+| 字段 | 类型 | 可空 | 说明 |
+|---|---|---:|---|
+| id | BIGINT | 否 | 应用生成的主键 |
+| code | VARCHAR(64) | 否 | 租户唯一编码 |
+| name | VARCHAR(128) | 否 | 租户名称 |
+| status | VARCHAR(32) | 否 | ACTIVE、DISABLED |
+| version | INT | 否 | 乐观锁版本号 |
+| created_at | DATETIME(3) | 否 | 创建时间 |
+| updated_at | DATETIME(3) | 否 | 更新时间 |
+
+约束和索引：
+
+- PRIMARY KEY：id
+- UNIQUE：code
+- INDEX：status
+
+### users
+
+租户内的系统用户。
+
+| 字段 | 类型 | 可空 | 说明 |
+|---|---|---:|---|
+| id | BIGINT | 否 | 主键 |
+| tenant_id | BIGINT | 否 | 所属租户 |
+| username | VARCHAR(64) | 否 | 登录用户名 |
+| email | VARCHAR(255) | 是 | 邮箱 |
+| password_hash | VARCHAR(255) | 否 | 密码哈希 |
+| display_name | VARCHAR(128) | 否 | 展示名称 |
+| status | VARCHAR(32) | 否 | ACTIVE、LOCKED、DISABLED |
+| last_login_at | DATETIME(3) | 是 |最后登录时间 |
+| version | INT | 否 | 乐观锁版本号 |
+| created_at | DATETIME(3) | 否 | 创建时间 |
+| updated_at | DATETIME(3) | 否 | 更新时间 |
+
+约束和索引：
+
+- PRIMARY KEY：id
+- UNIQUE：tenant_id + username
+- UNIQUE：tenant_id + email
+- INDEX：tenant_id + status
+- FOREIGN KEY：tenant_id → tenants.id
+
+### roles
+
+租户内定义的角色。
+
+| 字段 | 类型 | 可空 | 说明 |
+|---|---|---:|---|
+| id | BIGINT | 否 | 主键 |
+| tenant_id | BIGINT | 否 | 所属租户 |
+| code | VARCHAR(64) | 否 | ADMIN、MEMBER 等角色编码 |
+| name | VARCHAR(128) | 否 | 角色名称 |
+| description | VARCHAR(500) | 是 | 角色说明 |
+| created_at | DATETIME(3) | 否 | 创建时间 |
+| updated_at | DATETIME(3) | 否 | 更新时间 |
+
+约束和索引：
+
+- PRIMARY KEY：id
+- UNIQUE：tenant_id + code
+- FOREIGN KEY：tenant_id → tenants.id
+
+
+### user_roles
+
+用户与角色的多对多关系表。
+
+| 字段 | 类型 | 可空 | 说明 |
+|---|---|---:|---|
+| tenant_id | BIGINT | 否 | 所属租户 |
+| user_id | BIGINT | 否 | 用户ID |
+| role_id | BIGINT | 否 | 角色ID |
+| assigned_by | BIGINT | 是 | 分配角色的用户 |
+| assigned_at | DATETIME(3) | 否 | 分配时间 |
+
+约束和索引：
+
+- PRIMARY KEY：tenant_id + user_id + role_id
+- INDEX：tenant_id + role_id
+- FOREIGN KEY：tenant_id → tenants.id
+- FOREIGN KEY：user_id → users.id
+- FOREIGN KEY：role_id → roles.id
+- FOREIGN KEY：assigned_by → users.id
+
+
