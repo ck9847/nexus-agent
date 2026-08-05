@@ -49,3 +49,6 @@ info:
 nexus:
   id:
     node-id: ${NEXUS_ID_NODE_ID:0}
+
+  security:
+    bcrypt-strength: ${NEXUS_BCRYPT_STRENGTH:12}
