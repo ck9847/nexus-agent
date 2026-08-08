@@ -11,7 +11,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 @RestControllerAdvice
-public class TenantBootstrapExceptionHandler {
+public class IdentityExceptionHandler {
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ProblemDetail handleValidation(
@@ -91,6 +91,24 @@ public class TenantBootstrapExceptionHandler {
         problem.setProperty(
                 "errorCode",
                 "INVALID_ARGUMENT"
+        );
+
+        return problem;
+    }
+
+    @ExceptionHandler(InvalidCredentialsException.class)
+    public ProblemDetail handleInvalidCredentials(
+            InvalidCredentialsException exception
+    ) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.UNAUTHORIZED,
+                "Invalid tenant code, username or password"
+        );
+
+        problem.setTitle("Authentication failed");
+        problem.setProperty(
+                "errorCode",
+                "INVALID_CREDENTIALS"
         );
 
         return problem;

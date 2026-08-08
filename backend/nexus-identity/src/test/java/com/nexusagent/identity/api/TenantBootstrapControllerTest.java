@@ -15,7 +15,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(TenantBootstrapController.class)
-@Import(TenantBootstrapExceptionHandler.class)
+@Import(IdentityExceptionHandler.class)
 class TenantBootstrapControllerTest {
 
     @Autowired

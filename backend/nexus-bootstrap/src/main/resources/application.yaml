@@ -52,3 +52,8 @@ nexus:
 
   security:
     bcrypt-strength: ${NEXUS_BCRYPT_STRENGTH:12}
+
+    jwt:
+      issuer: ${NEXUS_JWT_ISSUER:https://auth.nexus-agent.local}
+      secret: ${NEXUS_JWT_SECRET}
+      access-token-ttl: ${NEXUS_JWT_ACCESS_TOKEN_TTL:15m}
