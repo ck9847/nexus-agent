@@ -28,4 +28,24 @@ public class TicketExceptionHandler {
 
         return problem;
     }
+
+    @ExceptionHandler(InvalidTicketQueryException.class)
+    public ProblemDetail handleInvalidTicketQuery(
+            InvalidTicketQueryException exception
+    ) {
+        ProblemDetail problem =
+                ProblemDetail.forStatusAndDetail(
+                        HttpStatus.BAD_REQUEST,
+                        exception.getMessage()
+                );
+
+        problem.setTitle("Invalid ticket query");
+        problem.setProperty(
+                "errorCode",
+                "INVALID_TICKET_QUERY"
+        );
+
+        return problem;
+    }
+
 }
