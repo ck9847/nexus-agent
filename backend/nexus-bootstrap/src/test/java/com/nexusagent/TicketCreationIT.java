@@ -8,6 +8,8 @@ import com.nexusagent.ticket.api.CreateTicketRequest;
 import com.nexusagent.ticket.api.CreateTicketResponse;
 import com.nexusagent.ticket.domain.TicketPriority;
 import com.nexusagent.ticket.domain.TicketStatus;
+import com.nexusagent.ticket.api.TicketDetailResponse;
+import com.nexusagent.ticket.domain.TicketSource;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -25,6 +27,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import com.nexusagent.audit.api.AuditLogWriter;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.util.AopTestUtils;
+
 
 import java.util.Map;
 
@@ -207,6 +210,78 @@ class TicketCreationIT {
                 Long.parseLong(
                         bootstrapBody.adminUserId()
                 );
+
+        ResponseEntity<TicketDetailResponse> queried =
+                restTemplate.exchange(
+                        "/api/v1/tickets/{ticketNo}",
+                        HttpMethod.GET,
+                        new HttpEntity<>(headers),
+                        TicketDetailResponse.class,
+                        createdBody.ticketNo()
+                );
+
+        assertEquals(
+                HttpStatus.OK,
+                queried.getStatusCode()
+        );
+        assertNotNull(queried.getBody());
+
+        TicketDetailResponse queriedBody =
+                queried.getBody();
+
+        assertAll(
+                () -> assertEquals(
+                        createdBody.ticketId(),
+                        queriedBody.ticketId()
+                ),
+                () -> assertEquals(
+                        createdBody.ticketNo(),
+                        queriedBody.ticketNo()
+                ),
+                () -> assertEquals(
+                        ticketRequest.title(),
+                        queriedBody.title()
+                ),
+                () -> assertEquals(
+                        ticketRequest.description(),
+                        queriedBody.description()
+                ),
+                () -> assertEquals(
+                        TicketPriority.HIGH,
+                        queriedBody.priority()
+                ),
+                () -> assertEquals(
+                        TicketStatus.OPEN,
+                        queriedBody.status()
+                ),
+                () -> assertEquals(
+                        TicketSource.USER,
+                        queriedBody.source()
+                ),
+                () -> assertEquals(
+                        Long.toString(adminUserId),
+                        queriedBody.requesterUserId()
+                ),
+                () -> assertNull(
+                        queriedBody.assigneeUserId()
+                ),
+                () -> assertNull(
+                        queriedBody.createdByAgentId()
+                ),
+                () -> assertEquals(
+                        0,
+                        queriedBody.version()
+                ),
+                () -> assertNotNull(
+                        queriedBody.createdAt()
+                ),
+                () -> assertNotNull(
+                        queriedBody.updatedAt()
+                ),
+                () -> assertNull(
+                        queriedBody.closedAt()
+                )
+        );
 
         Map<String, Object> ticket =
                 jdbcTemplate.queryForMap(
@@ -481,6 +556,172 @@ class TicketCreationIT {
                         0L,
                         auditCount,
                         "failed audit must not be persisted"
+                )
+        );
+    }
+
+    @Test
+    void shouldHideTicketFromDifferentTenant() {
+        String password = "StrongPassword123!";
+
+        ResponseEntity<BootstrapTenantResponse> ownerBootstrap =
+                restTemplate.postForEntity(
+                        "/api/v1/tenants/bootstrap",
+                        new BootstrapTenantRequest(
+                                "ticket-query-owner",
+                                "Ticket Query Owner",
+                                "admin",
+                                "owner-admin@integration.example",
+                                password
+                        ),
+                        BootstrapTenantResponse.class
+                );
+
+        ResponseEntity<BootstrapTenantResponse> outsiderBootstrap =
+                restTemplate.postForEntity(
+                        "/api/v1/tenants/bootstrap",
+                        new BootstrapTenantRequest(
+                                "ticket-query-outsider",
+                                "Ticket Query Outsider",
+                                "admin",
+                                "outsider-admin@integration.example",
+                                password
+                        ),
+                        BootstrapTenantResponse.class
+                );
+
+        assertAll(
+                () -> assertEquals(
+                        HttpStatus.CREATED,
+                        ownerBootstrap.getStatusCode()
+                ),
+                () -> assertEquals(
+                        HttpStatus.CREATED,
+                        outsiderBootstrap.getStatusCode()
+                )
+        );
+
+        ResponseEntity<LoginResponse> ownerLogin =
+                restTemplate.postForEntity(
+                        "/api/v1/auth/login",
+                        new LoginRequest(
+                                "ticket-query-owner",
+                                "admin",
+                                password
+                        ),
+                        LoginResponse.class
+                );
+
+        ResponseEntity<LoginResponse> outsiderLogin =
+                restTemplate.postForEntity(
+                        "/api/v1/auth/login",
+                        new LoginRequest(
+                                "ticket-query-outsider",
+                                "admin",
+                                password
+                        ),
+                        LoginResponse.class
+                );
+
+        assertAll(
+                () -> assertEquals(
+                        HttpStatus.OK,
+                        ownerLogin.getStatusCode()
+                ),
+                () -> assertNotNull(ownerLogin.getBody()),
+                () -> assertEquals(
+                        HttpStatus.OK,
+                        outsiderLogin.getStatusCode()
+                ),
+                () -> assertNotNull(outsiderLogin.getBody())
+        );
+
+        HttpHeaders ownerHeaders = new HttpHeaders();
+        ownerHeaders.setBearerAuth(
+                ownerLogin.getBody().accessToken()
+        );
+
+        HttpHeaders outsiderHeaders = new HttpHeaders();
+        outsiderHeaders.setBearerAuth(
+                outsiderLogin.getBody().accessToken()
+        );
+
+        ResponseEntity<CreateTicketResponse> created =
+                restTemplate.exchange(
+                        "/api/v1/tickets",
+                        HttpMethod.POST,
+                        new HttpEntity<>(
+                                new CreateTicketRequest(
+                                        "Owner-only incident",
+                                        "This ticket belongs to the owner tenant.",
+                                        TicketPriority.HIGH
+                                ),
+                                ownerHeaders
+                        ),
+                        CreateTicketResponse.class
+                );
+
+        assertEquals(
+                HttpStatus.CREATED,
+                created.getStatusCode()
+        );
+        assertNotNull(created.getBody());
+
+        String ticketNo = created.getBody().ticketNo();
+
+        ResponseEntity<String> crossTenantQuery =
+                restTemplate.exchange(
+                        "/api/v1/tickets/{ticketNo}",
+                        HttpMethod.GET,
+                        new HttpEntity<>(outsiderHeaders),
+                        String.class,
+                        ticketNo
+                );
+
+        ResponseEntity<String> missingTicketQuery =
+                restTemplate.exchange(
+                        "/api/v1/tickets/{ticketNo}",
+                        HttpMethod.GET,
+                        new HttpEntity<>(ownerHeaders),
+                        String.class,
+                        "TKT-DOES-NOT-EXIST"
+                );
+
+        ResponseEntity<String> unauthorizedQuery =
+                restTemplate.getForEntity(
+                        "/api/v1/tickets/{ticketNo}",
+                        String.class,
+                        ticketNo
+                );
+
+        assertAll(
+                () -> assertEquals(
+                        HttpStatus.NOT_FOUND,
+                        crossTenantQuery.getStatusCode()
+                ),
+                () -> assertNotNull(
+                        crossTenantQuery.getBody()
+                ),
+                () -> assertTrue(
+                        crossTenantQuery.getBody().contains(
+                                "TICKET_NOT_FOUND"
+                        )
+                ),
+                () -> assertEquals(
+                        HttpStatus.NOT_FOUND,
+                        missingTicketQuery.getStatusCode()
+                ),
+                () -> assertNotNull(
+                        missingTicketQuery.getBody()
+                ),
+                () -> assertTrue(
+                        missingTicketQuery.getBody().contains(
+                                "TICKET_NOT_FOUND"
+                        )
+                ),
+                () -> assertEquals(
+                        HttpStatus.UNAUTHORIZED,
+                        unauthorizedQuery.getStatusCode()
                 )
         );
     }
