@@ -9,6 +9,9 @@ import com.nexusagent.ticket.domain.TicketSource;
 import com.nexusagent.ticket.domain.TicketStatus;
 import com.nexusagent.ticket.internal.persistence.TicketDetailRow;
 import com.nexusagent.ticket.internal.persistence.TicketMapper;
+import com.nexusagent.ticket.api.TicketListQuery;
+import com.nexusagent.ticket.api.TicketListResponse;
+import com.nexusagent.ticket.internal.persistence.TicketListRow;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -18,6 +21,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.Set;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -26,6 +30,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 @ExtendWith(MockitoExtension.class)
 class DefaultTicketQueryServiceTest {
@@ -36,13 +43,17 @@ class DefaultTicketQueryServiceTest {
     @Mock
     private TicketMapper ticketMapper;
 
+    @Mock
+    private TicketCursorCodec ticketCursorCodec;
+
     private DefaultTicketQueryService service;
 
     @BeforeEach
     void setUp() {
         service = new DefaultTicketQueryService(
                 currentActorProvider,
-                ticketMapper
+                ticketMapper,
+                ticketCursorCodec
         );
     }
 
@@ -197,6 +208,250 @@ class DefaultTicketQueryServiceTest {
         );
 
         verifyNoInteractions(ticketMapper);
+    }
+
+    @Test
+    void shouldReturnFirstPageAndGenerateNextCursor() {
+        when(currentActorProvider.requireCurrentActor())
+                .thenReturn(actor());
+
+        Instant firstCreatedAt = Instant.parse(
+                "2026-08-08T03:00:00Z"
+        );
+        Instant secondCreatedAt = Instant.parse(
+                "2026-08-08T02:00:00Z"
+        );
+        Instant thirdCreatedAt = Instant.parse(
+                "2026-08-08T01:00:00Z"
+        );
+
+        TicketListRow first = listRow(
+                903L,
+                firstCreatedAt
+        );
+        TicketListRow second = listRow(
+                902L,
+                secondCreatedAt
+        );
+        TicketListRow extra = listRow(
+                901L,
+                thirdCreatedAt
+        );
+
+        when(ticketMapper.findPage(
+                202L,
+                TicketStatus.OPEN,
+                TicketPriority.HIGH,
+                null,
+                null,
+                3
+        )).thenReturn(List.of(
+                first,
+                second,
+                extra
+        ));
+
+        TicketPageCursor expectedNextCursor =
+                new TicketPageCursor(
+                        secondCreatedAt,
+                        902L
+                );
+
+        when(ticketCursorCodec.encode(
+                expectedNextCursor
+        )).thenReturn("next-cursor");
+
+        TicketListResponse response = service.list(
+                new TicketListQuery(
+                        TicketStatus.OPEN,
+                        TicketPriority.HIGH,
+                        2,
+                        null
+                )
+        );
+
+        assertAll(
+                () -> assertEquals(
+                        2,
+                        response.items().size()
+                ),
+                () -> assertEquals(
+                        "903",
+                        response.items()
+                                .get(0)
+                                .ticketId()
+                ),
+                () -> assertEquals(
+                        "902",
+                        response.items()
+                                .get(1)
+                                .ticketId()
+                ),
+                () -> assertEquals(
+                        "next-cursor",
+                        response.nextCursor()
+                ),
+                () -> assertTrue(
+                        response.hasMore()
+                )
+        );
+
+        verify(ticketMapper).findPage(
+                202L,
+                TicketStatus.OPEN,
+                TicketPriority.HIGH,
+                null,
+                null,
+                3
+        );
+
+        verify(ticketCursorCodec).encode(
+                expectedNextCursor
+        );
+    }
+
+    @Test
+    void shouldUseDecodedCursorForNextPage() {
+        when(currentActorProvider.requireCurrentActor())
+                .thenReturn(actor());
+
+        TicketPageCursor decodedCursor =
+                new TicketPageCursor(
+                        Instant.parse(
+                                "2026-08-08T02:00:00Z"
+                        ),
+                        902L
+                );
+
+        when(ticketCursorCodec.decode(
+                "current-cursor"
+        )).thenReturn(decodedCursor);
+
+        when(ticketMapper.findPage(
+                202L,
+                null,
+                null,
+                decodedCursor.createdAt(),
+                decodedCursor.ticketId(),
+                3
+        )).thenReturn(List.of(
+                listRow(
+                        901L,
+                        Instant.parse(
+                                "2026-08-08T01:00:00Z"
+                        )
+                )
+        ));
+
+        TicketListResponse response = service.list(
+                new TicketListQuery(
+                        null,
+                        null,
+                        2,
+                        "current-cursor"
+                )
+        );
+
+        assertAll(
+                () -> assertEquals(
+                        1,
+                        response.items().size()
+                ),
+                () -> assertEquals(
+                        "901",
+                        response.items()
+                                .getFirst()
+                                .ticketId()
+                ),
+                () -> assertFalse(
+                        response.hasMore()
+                ),
+                () -> assertNull(
+                        response.nextCursor()
+                )
+        );
+
+        verify(ticketCursorCodec).decode(
+                "current-cursor"
+        );
+
+        verify(ticketMapper).findPage(
+                202L,
+                null,
+                null,
+                decodedCursor.createdAt(),
+                decodedCursor.ticketId(),
+                3
+        );
+
+        verifyNoMoreInteractions(ticketCursorCodec);
+    }
+
+    @Test
+    void shouldRejectRowOutsideCurrentTenant() {
+        when(currentActorProvider.requireCurrentActor())
+                .thenReturn(actor());
+
+        TicketListRow foreignRow =
+                new TicketListRow(
+                        901L,
+                        999L,
+                        "TKT-P1",
+                        "Foreign tenant ticket",
+                        TicketPriority.HIGH,
+                        TicketStatus.OPEN,
+                        TicketSource.USER,
+                        101L,
+                        null,
+                        0,
+                        Instant.parse(
+                                "2026-08-08T01:00:00Z"
+                        ),
+                        Instant.parse(
+                                "2026-08-08T01:00:00Z"
+                        )
+                );
+
+        when(ticketMapper.findPage(
+                202L,
+                null,
+                null,
+                null,
+                null,
+                21
+        )).thenReturn(List.of(foreignRow));
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> service.list(
+                        new TicketListQuery(
+                                null,
+                                null,
+                                20,
+                                null
+                        )
+                )
+        );
+    }
+
+    private static TicketListRow listRow(
+            long id,
+            Instant createdAt
+    ) {
+        return new TicketListRow(
+                id,
+                202L,
+                "TKT-" + id,
+                "Ticket " + id,
+                TicketPriority.HIGH,
+                TicketStatus.OPEN,
+                TicketSource.USER,
+                101L,
+                null,
+                0,
+                createdAt,
+                createdAt
+        );
     }
 
     private static CurrentActor actor() {
