@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.PatchMapping;
 
 import com.nexusagent.ticket.domain.TicketPriority;
 import com.nexusagent.ticket.domain.TicketStatus;
@@ -20,13 +21,17 @@ public class TicketController {
 
     private final CreateTicketService createTicketService;
     private final TicketQueryService ticketQueryService;
+    private final ChangeTicketStatusService changeTicketStatusService;
 
     public TicketController(
             CreateTicketService createTicketService,
-            TicketQueryService ticketQueryService
+            TicketQueryService ticketQueryService,
+            ChangeTicketStatusService changeTicketStatusService
     ) {
         this.createTicketService = createTicketService;
         this.ticketQueryService = ticketQueryService;
+        this.changeTicketStatusService =
+                changeTicketStatusService;
     }
 
     @PostMapping
@@ -82,4 +87,17 @@ public class TicketController {
                 ticketNo
         );
     }
+
+    @PatchMapping("/{ticketNo}/status")
+    public ChangeTicketStatusResponse changeStatus(
+            @PathVariable("ticketNo") String ticketNo,
+            @Valid @RequestBody
+            ChangeTicketStatusRequest request
+    ) {
+        return changeTicketStatusService.changeStatus(
+                ticketNo,
+                request
+        );
+    }
+
 }

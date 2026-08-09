@@ -8,6 +8,8 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import com.nexusagent.ticket.domain.TicketPriority;
 import com.nexusagent.ticket.domain.TicketSource;
+import com.nexusagent.ticket.domain.InvalidTicketStatusTransitionException;
+import com.nexusagent.ticket.domain.TicketVersionConflictException;
 
 import java.util.List;
 import java.time.Instant;
@@ -21,6 +23,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 
 @WebMvcTest(TicketController.class)
 class TicketControllerTest {
@@ -33,6 +36,9 @@ class TicketControllerTest {
 
     @MockitoBean
     private TicketQueryService ticketQueryService;
+
+    @MockitoBean
+    private ChangeTicketStatusService changeTicketStatusService;
 
     @Test
     void shouldCreateTicket() throws Exception {
@@ -297,5 +303,243 @@ class TicketControllerTest {
                         .value(
                                 "Invalid ticket query cursor"
                         ));
+    }
+
+    @Test
+    void shouldChangeTicketStatus() throws Exception {
+        Instant updatedAt = Instant.parse(
+                "2026-08-09T07:01:00Z"
+        );
+
+        ChangeTicketStatusRequest request =
+                new ChangeTicketStatusRequest(
+                        TicketStatus.IN_PROGRESS,
+                        0
+                );
+
+        when(changeTicketStatusService.changeStatus(
+                "TKT-P1",
+                request
+        )).thenReturn(new ChangeTicketStatusResponse(
+                "901",
+                "TKT-P1",
+                TicketStatus.OPEN,
+                TicketStatus.IN_PROGRESS,
+                1,
+                null,
+                updatedAt
+        ));
+
+        mockMvc.perform(patch(
+                        "/api/v1/tickets/{ticketNo}/status",
+                        "TKT-P1"
+                )
+                        .contentType("application/json")
+                        .content("""
+                            {
+                              "targetStatus": "IN_PROGRESS",
+                              "expectedVersion": 0
+                            }
+                            """))
+                .andExpect(status().isOk())
+                .andExpect(content()
+                        .contentTypeCompatibleWith(
+                                "application/json"
+                        ))
+                .andExpect(jsonPath("$.ticketId")
+                        .value("901"))
+                .andExpect(jsonPath("$.ticketNo")
+                        .value("TKT-P1"))
+                .andExpect(jsonPath("$.previousStatus")
+                        .value("OPEN"))
+                .andExpect(jsonPath("$.currentStatus")
+                        .value("IN_PROGRESS"))
+                .andExpect(jsonPath("$.version")
+                        .value(1))
+                .andExpect(jsonPath("$.closedAt")
+                        .doesNotExist())
+                .andExpect(jsonPath("$.updatedAt")
+                        .value("2026-08-09T07:01:00Z"));
+
+        verify(changeTicketStatusService).changeStatus(
+                "TKT-P1",
+                request
+        );
+    }
+
+    @Test
+    void shouldRejectInvalidStatusChangeRequest()
+            throws Exception {
+        mockMvc.perform(patch(
+                        "/api/v1/tickets/{ticketNo}/status",
+                        "TKT-P1"
+                )
+                        .contentType("application/json")
+                        .content("""
+                            {
+                              "expectedVersion": -1
+                            }
+                            """))
+                .andExpect(status().isBadRequest())
+                .andExpect(content()
+                        .contentTypeCompatibleWith(
+                                "application/problem+json"
+                        ))
+                .andExpect(jsonPath("$.errorCode")
+                        .value("VALIDATION_FAILED"))
+                .andExpect(jsonPath(
+                        "$.errors.targetStatus"
+                ).value("targetStatus is required"))
+                .andExpect(jsonPath(
+                        "$.errors.expectedVersion"
+                ).value(
+                        "expectedVersion must not be negative"
+                ));
+
+        verifyNoInteractions(
+                changeTicketStatusService
+        );
+    }
+
+    @Test
+    void shouldRejectUnknownTargetStatus()
+            throws Exception {
+        mockMvc.perform(patch(
+                        "/api/v1/tickets/{ticketNo}/status",
+                        "TKT-P1"
+                )
+                        .contentType("application/json")
+                        .content("""
+                            {
+                              "targetStatus": "UNKNOWN",
+                              "expectedVersion": 0
+                            }
+                            """))
+                .andExpect(status().isBadRequest())
+                .andExpect(content()
+                        .contentTypeCompatibleWith(
+                                "application/problem+json"
+                        ))
+                .andExpect(jsonPath("$.errorCode")
+                        .value("MALFORMED_REQUEST"));
+
+        verifyNoInteractions(
+                changeTicketStatusService
+        );
+    }
+
+    @Test
+    void shouldReturnNotFoundWhenChangingInvisibleTicket()
+            throws Exception {
+        ChangeTicketStatusRequest request =
+                new ChangeTicketStatusRequest(
+                        TicketStatus.IN_PROGRESS,
+                        0
+                );
+
+        when(changeTicketStatusService.changeStatus(
+                "TKT-MISSING",
+                request
+        )).thenThrow(new TicketNotFoundException());
+
+        mockMvc.perform(patch(
+                        "/api/v1/tickets/{ticketNo}/status",
+                        "TKT-MISSING"
+                )
+                        .contentType("application/json")
+                        .content("""
+                            {
+                              "targetStatus": "IN_PROGRESS",
+                              "expectedVersion": 0
+                            }
+                            """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode")
+                        .value("TICKET_NOT_FOUND"));
+    }
+
+    @Test
+    void shouldReturnConflictForInvalidStatusTransition()
+            throws Exception {
+        ChangeTicketStatusRequest request =
+                new ChangeTicketStatusRequest(
+                        TicketStatus.CLOSED,
+                        0
+                );
+
+        when(changeTicketStatusService.changeStatus(
+                "TKT-P1",
+                request
+        )).thenThrow(
+                new InvalidTicketStatusTransitionException(
+                        TicketStatus.OPEN,
+                        TicketStatus.CLOSED
+                )
+        );
+
+        mockMvc.perform(patch(
+                        "/api/v1/tickets/{ticketNo}/status",
+                        "TKT-P1"
+                )
+                        .contentType("application/json")
+                        .content("""
+                            {
+                              "targetStatus": "CLOSED",
+                              "expectedVersion": 0
+                            }
+                            """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode")
+                        .value(
+                                "INVALID_TICKET_STATUS_TRANSITION"
+                        ))
+                .andExpect(jsonPath("$.currentStatus")
+                        .value("OPEN"))
+                .andExpect(jsonPath("$.targetStatus")
+                        .value("CLOSED"))
+                .andExpect(jsonPath("$.detail")
+                        .value(
+                                "Cannot transition ticket "
+                                        + "from OPEN to CLOSED"
+                        ));
+    }
+
+    @Test
+    void shouldReturnConflictForStaleVersion()
+            throws Exception {
+        ChangeTicketStatusRequest request =
+                new ChangeTicketStatusRequest(
+                        TicketStatus.IN_PROGRESS,
+                        0
+                );
+
+        when(changeTicketStatusService.changeStatus(
+                "TKT-P1",
+                request
+        )).thenThrow(
+                new TicketVersionConflictException()
+        );
+
+        mockMvc.perform(patch(
+                        "/api/v1/tickets/{ticketNo}/status",
+                        "TKT-P1"
+                )
+                        .contentType("application/json")
+                        .content("""
+                            {
+                              "targetStatus": "IN_PROGRESS",
+                              "expectedVersion": 0
+                            }
+                            """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.title")
+                        .value("Ticket version conflict"))
+                .andExpect(jsonPath("$.detail")
+                        .value(
+                                "Ticket was modified "
+                                        + "by another request"
+                        ))
+                .andExpect(jsonPath("$.errorCode")
+                        .value("TICKET_VERSION_CONFLICT"));
     }
 }

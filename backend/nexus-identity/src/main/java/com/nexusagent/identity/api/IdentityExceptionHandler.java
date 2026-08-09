@@ -10,7 +10,10 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-@RestControllerAdvice
+@RestControllerAdvice(
+        basePackageClasses =
+                TenantBootstrapController.class
+)
 public class IdentityExceptionHandler {
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
