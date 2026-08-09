@@ -107,6 +107,25 @@ public interface AgentMapper {
             @Param("code") String code
     );
 
+    @Select("""
+        SELECT
+            id,
+            tenant_id,
+            code,
+            status
+        FROM agents
+        WHERE tenant_id = #{tenantId}
+          AND code = #{code}
+          AND status = #{status}
+        LIMIT 1
+        """)
+    Optional<ActiveAgentRow>
+    findReferenceByTenantIdAndCodeAndStatus(
+            @Param("tenantId") long tenantId,
+            @Param("code") String code,
+            @Param("status") AgentStatus status
+    );
+
     @Update("""
             UPDATE agents
             SET status = #{targetStatus},
