@@ -120,6 +120,7 @@ public class DefaultCreateConversationService
                         title,
                         ConversationStatus.ACTIVE,
                         now,
+                        2L,
                         0,
                         now,
                         now

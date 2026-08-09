@@ -174,6 +174,7 @@ class DefaultCreateConversationServiceTest {
                         "Production issue",
                         ConversationStatus.ACTIVE,
                         NOW,
+                        2L,
                         0,
                         NOW,
                         NOW
