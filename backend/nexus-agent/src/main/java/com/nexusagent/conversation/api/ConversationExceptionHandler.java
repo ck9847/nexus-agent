@@ -116,4 +116,50 @@ public class ConversationExceptionHandler {
 
         return problem;
     }
+
+    @ExceptionHandler(ConversationNotFoundException.class)
+    public ProblemDetail handleConversationNotFound(
+            ConversationNotFoundException exception
+    ) {
+        ProblemDetail problem =
+                ProblemDetail.forStatusAndDetail(
+                        HttpStatus.NOT_FOUND,
+                        "Conversation not found"
+                );
+
+        problem.setTitle("Conversation not found");
+        problem.setProperty(
+                "errorCode",
+                "CONVERSATION_NOT_FOUND"
+        );
+
+        return problem;
+    }
+
+    @ExceptionHandler(ConversationNotActiveException.class)
+    public ProblemDetail handleConversationNotActive(
+            ConversationNotActiveException exception
+    ) {
+        ProblemDetail problem =
+                ProblemDetail.forStatusAndDetail(
+                        HttpStatus.CONFLICT,
+                        "Conversation is not active"
+                );
+
+        problem.setTitle(
+                "Conversation is not active"
+        );
+
+        problem.setProperty(
+                "errorCode",
+                "CONVERSATION_NOT_ACTIVE"
+        );
+
+        problem.setProperty(
+                "currentStatus",
+                exception.currentStatus().name()
+        );
+
+        return problem;
+    }
 }

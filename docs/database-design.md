@@ -261,6 +261,7 @@ erDiagram
 | title | VARCHAR(255) | 是 | 会话标题 |
 | status | VARCHAR(32) | 否 | ACTIVE、COMPLETED、ARCHIVED |
 | last_message_at | DATETIME(3) | 是 | 最后一条消息时间 |
+| next_message_sequence | BIGINT | 否 | 下一条消息的会话内序号 |
 | version | INT | 否 | 乐观锁版本 |
 | created_at | DATETIME(3) | 否 | 创建时间 |
 | updated_at | DATETIME(3) | 否 | 更新时间 |
@@ -397,5 +398,7 @@ erDiagram
 8. Agent 代表用户创建工单时，同时记录 requester_user_id 和 created_by_agent_id。
 9. tickets、agents、conversations 更新时必须校验 version。
 10. messages 的 sequence_no 必须在同一会话内保持唯一且递增。
+11. 消息写入方必须先锁定 conversations 行（SELECT ... FOR UPDATE），再从 next_message_sequence 分配 sequence_no，确保并发写入时序号连续且不重复。
+12. 禁止在运行时使用 MAX(sequence_no) + 1 分配消息序号，必须使用 next_message_sequence 作为唯一分配源。
 
 

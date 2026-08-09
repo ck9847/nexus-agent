@@ -412,6 +412,7 @@ class ConversationCreationIT {
                         normalizedRequest.title(),
                         "ACTIVE",
                         response.lastMessageAt(),
+                        2L,
                         0,
                         response.createdAt(),
                         response.updatedAt()
@@ -652,6 +653,7 @@ class ConversationCreationIT {
                     title,
                     status,
                     last_message_at,
+                    next_message_sequence,
                     version,
                     created_at,
                     updated_at
@@ -672,6 +674,9 @@ class ConversationCreationIT {
                                 resultSet.getTimestamp(
                                         "last_message_at"
                                 ).toInstant(),
+                                resultSet.getLong(
+                                        "next_message_sequence"
+                                ),
                                 resultSet.getInt("version"),
                                 resultSet.getTimestamp(
                                         "created_at"
@@ -1333,6 +1338,7 @@ class ConversationCreationIT {
             String title,
             String status,
             Instant lastMessageAt,
+            long nextMessageSequence,
             int version,
             Instant createdAt,
             Instant updatedAt

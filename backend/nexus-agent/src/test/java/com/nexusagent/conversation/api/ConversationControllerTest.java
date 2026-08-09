@@ -51,6 +51,10 @@ class ConversationControllerTest {
     private CreateConversationService
             createConversationService;
 
+    @MockitoBean
+    private AppendUserMessageService
+            appendUserMessageService;
+
     @Test
     void shouldCreateConversation() throws Exception {
         CreatedMessageResponse message =
@@ -294,5 +298,301 @@ class ConversationControllerTest {
                         ))
                 .andExpect(jsonPath("$.errorCode")
                         .value("INVALID_ARGUMENT"));
+    }
+
+    @Test
+    void shouldAppendUserMessage() throws Exception {
+        CreatedMessageResponse message =
+                new CreatedMessageResponse(
+                        "902",
+                        2L,
+                        MessageRole.USER,
+                        "The payment still fails.",
+                        MessageContentType.TEXT,
+                        MessageStatus.COMPLETED,
+                        NOW
+                );
+
+        AppendUserMessageResponse response =
+                new AppendUserMessageResponse(
+                        "901",
+                        1,
+                        NOW,
+                        message
+                );
+
+        when(appendUserMessageService.append(
+                any(),
+                any()
+        )).thenReturn(response);
+
+        String request =
+                """
+                {
+                  "content": "The payment still fails."
+                }
+                """;
+
+        mockMvc.perform(
+                        post(
+                                "/api/v1/conversations/"
+                                        + "901/messages"
+                        )
+                                .contentType(
+                                        MediaType.APPLICATION_JSON
+                                )
+                                .content(request)
+                )
+                .andExpect(status().isCreated())
+                .andExpect(content()
+                        .contentTypeCompatibleWith(
+                                MediaType.APPLICATION_JSON
+                        ))
+                .andExpect(jsonPath("$.conversationId")
+                        .value("901"))
+                .andExpect(jsonPath(
+                        "$.conversationVersion"
+                ).value(1))
+                .andExpect(jsonPath("$.lastMessageAt")
+                        .value(NOW.toString()))
+                .andExpect(jsonPath(
+                        "$.message.messageId"
+                ).value("902"))
+                .andExpect(jsonPath(
+                        "$.message.sequenceNo"
+                ).value(2))
+                .andExpect(jsonPath("$.message.role")
+                        .value("USER"))
+                .andExpect(jsonPath("$.message.content")
+                        .value(
+                                "The payment still fails."
+                        ))
+                .andExpect(jsonPath(
+                        "$.message.contentType"
+                ).value("TEXT"))
+                .andExpect(jsonPath("$.message.status")
+                        .value("COMPLETED"))
+                .andExpect(jsonPath(
+                        "$.message.createdAt"
+                ).value(NOW.toString()));
+
+        verify(appendUserMessageService)
+                .append(
+                        "901",
+                        new AppendUserMessageRequest(
+                                "The payment still fails."
+                        )
+                );
+    }
+
+    @Test
+    void shouldRejectInvalidAppendMessageRequest()
+            throws Exception {
+        mockMvc.perform(
+                        post(
+                                "/api/v1/conversations/"
+                                        + "901/messages"
+                        )
+                                .contentType(
+                                        MediaType.APPLICATION_JSON
+                                )
+                                .content(
+                                        """
+                                        {
+                                          "content": " "
+                                        }
+                                        """
+                                )
+                )
+                .andExpect(status().isBadRequest())
+                .andExpect(content()
+                        .contentTypeCompatibleWith(
+                                MediaType.APPLICATION_PROBLEM_JSON
+                        ))
+                .andExpect(jsonPath("$.errorCode")
+                        .value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.errors.content")
+                        .exists());
+
+        mockMvc.perform(
+                        post(
+                                "/api/v1/conversations/"
+                                        + "901/messages"
+                        )
+                                .contentType(
+                                        MediaType.APPLICATION_JSON
+                                )
+                                .content(
+                                        """
+                                        {
+                                          "content": "%s"
+                                        }
+                                        """.formatted(
+                                                "x".repeat(50_001)
+                                        )
+                                )
+                )
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode")
+                        .value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.errors.content")
+                        .exists());
+
+        verifyNoInteractions(
+                appendUserMessageService
+        );
+    }
+
+    @Test
+    void shouldRejectMalformedAppendMessageRequest()
+            throws Exception {
+        mockMvc.perform(
+                        post(
+                                "/api/v1/conversations/"
+                                        + "901/messages"
+                        )
+                                .contentType(
+                                        MediaType.APPLICATION_JSON
+                                )
+                                .content("{")
+                )
+                .andExpect(status().isBadRequest())
+                .andExpect(content()
+                        .contentTypeCompatibleWith(
+                                MediaType.APPLICATION_PROBLEM_JSON
+                        ))
+                .andExpect(jsonPath("$.errorCode")
+                        .value("MALFORMED_REQUEST"));
+
+        verifyNoInteractions(
+                appendUserMessageService
+        );
+    }
+
+    @Test
+    void shouldHideMissingOrInaccessibleConversation()
+            throws Exception {
+        when(appendUserMessageService.append(
+                any(),
+                any()
+        )).thenThrow(
+                new ConversationNotFoundException()
+        );
+
+        mockMvc.perform(
+                        post(
+                                "/api/v1/conversations/"
+                                        + "901/messages"
+                        )
+                                .contentType(
+                                        MediaType.APPLICATION_JSON
+                                )
+                                .content(
+                                        """
+                                        {
+                                          "content": "Hello"
+                                        }
+                                        """
+                                )
+                )
+                .andExpect(status().isNotFound())
+                .andExpect(content()
+                        .contentTypeCompatibleWith(
+                                MediaType.APPLICATION_PROBLEM_JSON
+                        ))
+                .andExpect(jsonPath("$.title")
+                        .value("Conversation not found"))
+                .andExpect(jsonPath("$.detail")
+                        .value("Conversation not found"))
+                .andExpect(jsonPath("$.errorCode")
+                        .value("CONVERSATION_NOT_FOUND"))
+                .andExpect(jsonPath("$.conversationId")
+                        .doesNotExist())
+                .andExpect(jsonPath("$.tenantId")
+                        .doesNotExist())
+                .andExpect(jsonPath("$.userId")
+                        .doesNotExist());
+    }
+
+    @Test
+    void shouldRejectNonActiveConversation()
+            throws Exception {
+        when(appendUserMessageService.append(
+                any(),
+                any()
+        )).thenThrow(
+                new ConversationNotActiveException(
+                        ConversationStatus.COMPLETED
+                )
+        );
+
+        mockMvc.perform(
+                        post(
+                                "/api/v1/conversations/"
+                                        + "901/messages"
+                        )
+                                .contentType(
+                                        MediaType.APPLICATION_JSON
+                                )
+                                .content(
+                                        """
+                                        {
+                                          "content": "Hello"
+                                        }
+                                        """
+                                )
+                )
+                .andExpect(status().isConflict())
+                .andExpect(content()
+                        .contentTypeCompatibleWith(
+                                MediaType.APPLICATION_PROBLEM_JSON
+                        ))
+                .andExpect(jsonPath("$.errorCode")
+                        .value(
+                                "CONVERSATION_NOT_ACTIVE"
+                        ))
+                .andExpect(jsonPath("$.currentStatus")
+                        .value("COMPLETED"));
+    }
+
+    @Test
+    void shouldReturnBadRequestForInvalidConversationId()
+            throws Exception {
+        when(appendUserMessageService.append(
+                any(),
+                any()
+        )).thenThrow(
+                new IllegalArgumentException(
+                        "conversationId must be "
+                                + "a positive integer"
+                )
+        );
+
+        mockMvc.perform(
+                        post(
+                                "/api/v1/conversations/"
+                                        + "invalid/messages"
+                        )
+                                .contentType(
+                                        MediaType.APPLICATION_JSON
+                                )
+                                .content(
+                                        """
+                                        {
+                                          "content": "Hello"
+                                        }
+                                        """
+                                )
+                )
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.title")
+                        .value("Invalid request"))
+                .andExpect(jsonPath("$.errorCode")
+                        .value("INVALID_ARGUMENT"))
+                .andExpect(jsonPath("$.detail")
+                        .value(
+                                "conversationId must be "
+                                        + "a positive integer"
+                        ));
     }
 }

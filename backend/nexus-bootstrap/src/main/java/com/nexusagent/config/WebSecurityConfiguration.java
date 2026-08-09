@@ -36,7 +36,8 @@ public class WebSecurityConfiguration {
                         ).permitAll()
                         .requestMatchers(
                                 HttpMethod.POST,
-                                "/api/v1/conversations"
+                                "/api/v1/conversations",
+                                "/api/v1/conversations/*/messages"
                         ).authenticated()
                         .requestMatchers(
                                 "/api/v1/agents",
