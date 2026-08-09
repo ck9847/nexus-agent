@@ -35,6 +35,10 @@ public class WebSecurityConfiguration {
                                 "/actuator/info"
                         ).permitAll()
                         .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/v1/conversations"
+                        ).authenticated()
+                        .requestMatchers(
                                 "/api/v1/agents",
                                 "/api/v1/agents/**"
                         ).hasRole("ADMIN")
