@@ -22,10 +22,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.regex.Pattern;
+
 
 @Service
 public class DefaultCreateAgentService
@@ -33,7 +32,6 @@ public class DefaultCreateAgentService
 
     private static final String ADMIN_ROLE = "ADMIN";
 
-    private static final int MAX_CODE_LENGTH = 64;
     private static final int MAX_NAME_LENGTH = 128;
     private static final int MAX_DESCRIPTION_LENGTH = 500;
     private static final int MAX_SYSTEM_PROMPT_LENGTH = 50_000;
@@ -46,11 +44,6 @@ public class DefaultCreateAgentService
             new BigDecimal("1.0");
     private static final BigDecimal TWO =
             new BigDecimal("2.0");
-
-    private static final Pattern CODE_PATTERN =
-            Pattern.compile(
-                    "^[a-z][a-z0-9-]{2,63}$"
-            );
 
     private final CurrentActorProvider currentActorProvider;
     private final IdGenerator idGenerator;
@@ -89,7 +82,9 @@ public class DefaultCreateAgentService
             throw new AgentAdministrationForbiddenException();
         }
 
-        String code = normalizeCode(request.code());
+        String code = AgentCodeNormalizer.normalize(
+                request.code()
+        );
 
         String name = normalizeRequired(
                 request.name(),
@@ -206,26 +201,6 @@ public class DefaultCreateAgentService
                 AgentStatus.DRAFT,
                 0
         );
-    }
-
-    private static String normalizeCode(
-            String value
-    ) {
-        String normalized = normalizeRequired(
-                value,
-                "code",
-                MAX_CODE_LENGTH
-        ).toLowerCase(Locale.ROOT);
-
-        if (!CODE_PATTERN.matcher(normalized).matches()) {
-            throw new IllegalArgumentException(
-                    "code must be 3 to 64 lowercase "
-                            + "letters, digits or hyphens and "
-                            + "start with a letter"
-            );
-        }
-
-        return normalized;
     }
 
     private static String normalizeRequired(

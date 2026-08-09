@@ -6,6 +6,8 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import com.nexusagent.agent.domain.AgentVersionConflictException;
+import com.nexusagent.agent.domain.InvalidAgentStatusTransitionException;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -115,6 +117,77 @@ public class AgentExceptionHandler {
         problem.setProperty(
                 "errorCode",
                 "AGENT_ADMINISTRATION_FORBIDDEN"
+        );
+
+        return problem;
+    }
+
+    @ExceptionHandler(AgentNotFoundException.class)
+    public ProblemDetail handleAgentNotFound(
+            AgentNotFoundException exception
+    ) {
+        ProblemDetail problem =
+                ProblemDetail.forStatusAndDetail(
+                        HttpStatus.NOT_FOUND,
+                        "Agent not found"
+                );
+
+        problem.setTitle("Agent not found");
+        problem.setProperty(
+                "errorCode",
+                "AGENT_NOT_FOUND"
+        );
+
+        return problem;
+    }
+
+    @ExceptionHandler(
+            InvalidAgentStatusTransitionException.class
+    )
+    public ProblemDetail handleInvalidStatusTransition(
+            InvalidAgentStatusTransitionException exception
+    ) {
+        ProblemDetail problem =
+                ProblemDetail.forStatusAndDetail(
+                        HttpStatus.CONFLICT,
+                        exception.getMessage()
+                );
+
+        problem.setTitle(
+                "Invalid agent status transition"
+        );
+        problem.setProperty(
+                "errorCode",
+                "INVALID_AGENT_STATUS_TRANSITION"
+        );
+        problem.setProperty(
+                "currentStatus",
+                exception.currentStatus().name()
+        );
+        problem.setProperty(
+                "targetStatus",
+                exception.targetStatus().name()
+        );
+
+        return problem;
+    }
+
+    @ExceptionHandler(AgentVersionConflictException.class)
+    public ProblemDetail handleAgentVersionConflict(
+            AgentVersionConflictException exception
+    ) {
+        ProblemDetail problem =
+                ProblemDetail.forStatusAndDetail(
+                        HttpStatus.CONFLICT,
+                        exception.getMessage()
+                );
+
+        problem.setTitle(
+                "Agent version conflict"
+        );
+        problem.setProperty(
+                "errorCode",
+                "AGENT_VERSION_CONFLICT"
         );
 
         return problem;
