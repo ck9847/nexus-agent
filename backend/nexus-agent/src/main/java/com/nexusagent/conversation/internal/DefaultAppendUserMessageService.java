@@ -34,8 +34,6 @@ import java.util.Objects;
 public class DefaultAppendUserMessageService
         implements AppendUserMessageService {
 
-    private static final int MAX_MESSAGE_LENGTH = 50_000;
-
     private final CurrentActorProvider currentActorProvider;
     private final IdGenerator idGenerator;
     private final ConversationMapper conversationMapper;
@@ -78,9 +76,10 @@ public class DefaultAppendUserMessageService
                         conversationId
                 );
 
-        String content = normalizeContent(
-                request.content()
-        );
+        String content =
+                ConversationMessageContentNormalizer.normalize(
+                        request.content()
+                );
 
         ConversationAppendStateRow state =
                 Objects.requireNonNull(
@@ -203,32 +202,6 @@ public class DefaultAppendUserMessageService
                 now,
                 createdMessage
         );
-    }
-
-    private static String normalizeContent(String value) {
-        if (value == null) {
-            throw new IllegalArgumentException(
-                    "content must not be null"
-            );
-        }
-
-        String normalized = value.trim();
-
-        if (normalized.isBlank()) {
-            throw new IllegalArgumentException(
-                    "content must not be blank"
-            );
-        }
-
-        if (normalized.length() > MAX_MESSAGE_LENGTH) {
-            throw new IllegalArgumentException(
-                    "content must not exceed "
-                            + MAX_MESSAGE_LENGTH
-                            + " characters"
-            );
-        }
-
-        return normalized;
     }
 
     private static void validateState(
