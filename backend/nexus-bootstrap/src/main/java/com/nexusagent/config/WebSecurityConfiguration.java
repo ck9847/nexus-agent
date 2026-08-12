@@ -37,7 +37,8 @@ public class WebSecurityConfiguration {
                         .requestMatchers(
                                 HttpMethod.POST,
                                 "/api/v1/conversations",
-                                "/api/v1/conversations/*/messages"
+                                "/api/v1/conversations/*/messages",
+                                "/api/v1/conversations/*/turns:stream"
                         ).authenticated()
                         .requestMatchers(
                                 HttpMethod.GET,

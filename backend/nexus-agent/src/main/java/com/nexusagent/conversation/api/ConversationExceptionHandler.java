@@ -190,6 +190,30 @@ public class ConversationExceptionHandler {
     }
 
     @ExceptionHandler(
+            ConversationTurnCapacityExceededException.class
+    )
+    public ProblemDetail handleTurnCapacityExceeded(
+            ConversationTurnCapacityExceededException exception
+    ) {
+        ProblemDetail problem =
+                ProblemDetail.forStatusAndDetail(
+                        HttpStatus.SERVICE_UNAVAILABLE,
+                        "Conversation turn capacity "
+                                + "is temporarily unavailable"
+                );
+
+        problem.setTitle(
+                "Conversation turn capacity unavailable"
+        );
+        problem.setProperty(
+                "errorCode",
+                "CONVERSATION_TURN_CAPACITY_EXCEEDED"
+        );
+
+        return problem;
+    }
+
+    @ExceptionHandler(
             MethodArgumentTypeMismatchException.class
     )
     public ProblemDetail
