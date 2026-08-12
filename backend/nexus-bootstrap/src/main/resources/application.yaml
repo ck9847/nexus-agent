@@ -57,3 +57,11 @@ nexus:
       issuer: ${NEXUS_JWT_ISSUER:https://auth.nexus-agent.local}
       secret: ${NEXUS_JWT_SECRET}
       access-token-ttl: ${NEXUS_JWT_ACCESS_TOKEN_TTL:15m}
+  model:
+    openai:
+      enabled: ${NEXUS_OPENAI_ENABLED:false}
+      base-url: ${NEXUS_OPENAI_BASE_URL:https://api.openai.com/v1}
+      api-key: ${OPENAI_API_KEY:}
+      connect-timeout: ${NEXUS_OPENAI_CONNECT_TIMEOUT:10s}
+      read-timeout: ${NEXUS_OPENAI_READ_TIMEOUT:2m}
+      max-error-body-bytes: ${NEXUS_OPENAI_MAX_ERROR_BODY_BYTES:8192}
