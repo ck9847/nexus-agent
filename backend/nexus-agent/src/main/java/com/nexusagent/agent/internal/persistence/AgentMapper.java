@@ -146,4 +146,27 @@ public interface AgentMapper {
             @Param("expectedVersion")
             int expectedVersion
     );
+
+    @Select("""
+        SELECT
+            id,
+            tenant_id,
+            code,
+            system_prompt,
+            model_provider,
+            model_name,
+            CAST(model_config AS CHAR)
+                AS model_config_json,
+            status
+        FROM agents
+        WHERE id = #{agentId}
+          AND tenant_id = #{tenantId}
+          AND status = 'ACTIVE'
+        LIMIT 1
+        """)
+    Optional<ActiveAgentRuntimeRow>
+    findActiveRuntimeByTenantIdAndId(
+            @Param("tenantId") long tenantId,
+            @Param("agentId") long agentId
+    );
 }
