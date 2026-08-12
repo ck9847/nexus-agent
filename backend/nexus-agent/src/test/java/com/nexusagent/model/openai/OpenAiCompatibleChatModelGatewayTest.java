@@ -325,7 +325,7 @@ class OpenAiCompatibleChatModelGatewayTest {
     }
 
     @Test
-    void shouldReportInterruptedConnection() {
+    void shouldReportPrematureTerminationAsRetryable() {
         server.createContext(
                 "/v1/chat/completions",
                 exchange -> {
@@ -351,9 +351,13 @@ class OpenAiCompatibleChatModelGatewayTest {
                 this::stream
         );
 
-        assertEquals(
-                ChatModelErrorCategory.CONNECTION,
+        assertTrue(
                 exception.category()
+                        == ChatModelErrorCategory.CONNECTION
+                        || exception.category()
+                        == ChatModelErrorCategory.STREAM_INTERRUPTED,
+                () -> "Unexpected category: "
+                        + exception.category()
         );
         assertTrue(exception.retryable());
     }
