@@ -4,6 +4,7 @@ import com.nexusagent.agent.domain.AgentModelProvider;
 import com.nexusagent.model.api.ChatModelErrorCategory;
 import com.nexusagent.model.api.ChatModelException;
 import com.nexusagent.model.api.ChatModelGateway;
+import com.nexusagent.model.api.ChatModelGatewayResolver;
 import org.springframework.stereotype.Component;
 
 import java.util.EnumMap;
@@ -12,7 +13,7 @@ import java.util.Map;
 import java.util.Objects;
 
 @Component
-public class ChatModelGatewayRegistry {
+public class ChatModelGatewayRegistry implements ChatModelGatewayResolver {
 
     private final Map<AgentModelProvider, ChatModelGateway>
             gateways;
