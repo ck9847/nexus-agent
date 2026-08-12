@@ -40,6 +40,11 @@ public class WebSecurityConfiguration {
                                 "/api/v1/conversations/*/messages"
                         ).authenticated()
                         .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/conversations/*",
+                                "/api/v1/conversations/*/messages"
+                        ).authenticated()
+                        .requestMatchers(
                                 "/api/v1/agents",
                                 "/api/v1/agents/**"
                         ).hasRole("ADMIN")

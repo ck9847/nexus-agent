@@ -14,6 +14,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.Instant;
+import java.util.List;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
@@ -26,6 +27,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 
 @WebMvcTest(ConversationController.class)
 class ConversationControllerTest {
@@ -54,6 +56,10 @@ class ConversationControllerTest {
     @MockitoBean
     private AppendUserMessageService
             appendUserMessageService;
+
+    @MockitoBean
+    private ConversationQueryService
+            conversationQueryService;
 
     @Test
     void shouldCreateConversation() throws Exception {
@@ -594,5 +600,262 @@ class ConversationControllerTest {
                                 "conversationId must be "
                                         + "a positive integer"
                         ));
+    }
+
+    @Test
+    void shouldReturnConversationDetail()
+            throws Exception {
+        ConversationDetailResponse response =
+                new ConversationDetailResponse(
+                        "901",
+                        "301",
+                        "Production issue",
+                        ConversationStatus.ACTIVE,
+                        NOW,
+                        6,
+                        NOW.minusSeconds(300),
+                        NOW
+                );
+
+        when(conversationQueryService.getById(
+                "901"
+        )).thenReturn(response);
+
+        mockMvc.perform(
+                        get(
+                                "/api/v1/conversations/901"
+                        )
+                )
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.conversationId")
+                        .value("901"))
+                .andExpect(jsonPath("$.agentId")
+                        .value("301"))
+                .andExpect(jsonPath("$.title")
+                        .value("Production issue"))
+                .andExpect(jsonPath("$.status")
+                        .value("ACTIVE"))
+                .andExpect(jsonPath("$.version")
+                        .value(6))
+                .andExpect(jsonPath("$.lastMessageAt")
+                        .value(NOW.toString()))
+                .andExpect(jsonPath("$.tenantId")
+                        .doesNotExist())
+                .andExpect(jsonPath("$.userId")
+                        .doesNotExist())
+                .andExpect(jsonPath(
+                        "$.nextMessageSequence"
+                ).doesNotExist());
+
+        verify(conversationQueryService)
+                .getById("901");
+    }
+
+    @Test
+    void shouldListMessagesWithDefaultQuery()
+            throws Exception {
+        ConversationMessageResponse message =
+                new ConversationMessageResponse(
+                        "1001",
+                        1L,
+                        MessageRole.USER,
+                        "Hello",
+                        MessageContentType.TEXT,
+                        MessageStatus.COMPLETED,
+                        NOW
+                );
+
+        ConversationMessagesResponse response =
+                new ConversationMessagesResponse(
+                        List.of(message),
+                        null,
+                        false
+                );
+
+        when(conversationQueryService.listMessages(
+                any(),
+                any()
+        )).thenReturn(response);
+
+        mockMvc.perform(
+                        get(
+                                "/api/v1/conversations/"
+                                        + "901/messages"
+                        )
+                )
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()")
+                        .value(1))
+                .andExpect(jsonPath(
+                        "$.items[0].messageId"
+                ).value("1001"))
+                .andExpect(jsonPath(
+                        "$.items[0].sequenceNo"
+                ).value(1))
+                .andExpect(jsonPath(
+                        "$.items[0].role"
+                ).value("USER"))
+                .andExpect(jsonPath(
+                        "$.items[0].content"
+                ).value("Hello"))
+                .andExpect(jsonPath("$.hasMore")
+                        .value(false))
+                .andExpect(jsonPath("$.nextCursor")
+                        .doesNotExist());
+
+        verify(conversationQueryService)
+                .listMessages(
+                        "901",
+                        new ConversationMessagesQuery(
+                                20,
+                                null
+                        )
+                );
+    }@Test
+    void shouldForwardExplicitMessageQuery()
+            throws Exception {
+        when(conversationQueryService.listMessages(
+                any(),
+                any()
+        )).thenReturn(
+                new ConversationMessagesResponse(
+                        List.of(),
+                        null,
+                        false
+                )
+        );
+
+        mockMvc.perform(
+                        get(
+                                "/api/v1/conversations/"
+                                        + "901/messages"
+                        )
+                                .param("limit", "50")
+                                .param(
+                                        "cursor",
+                                        "opaque-cursor"
+                                )
+                )
+                .andExpect(status().isOk());
+
+        verify(conversationQueryService)
+                .listMessages(
+                        "901",
+                        new ConversationMessagesQuery(
+                                50,
+                                "opaque-cursor"
+                        )
+                );
+    }
+
+    @Test
+    void shouldHideMissingConversationOnQuery()
+            throws Exception {
+        when(conversationQueryService.getById(
+                "901"
+        )).thenThrow(
+                new ConversationNotFoundException()
+        );
+
+        mockMvc.perform(
+                        get(
+                                "/api/v1/conversations/901"
+                        )
+                )
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode")
+                        .value(
+                                "CONVERSATION_NOT_FOUND"
+                        ))
+                .andExpect(jsonPath("$.detail")
+                        .value(
+                                "Conversation not found"
+                        ))
+                .andExpect(jsonPath("$.conversationId")
+                        .doesNotExist())
+                .andExpect(jsonPath("$.tenantId")
+                        .doesNotExist())
+                .andExpect(jsonPath("$.userId")
+                        .doesNotExist());
+    }
+
+    @Test
+    void shouldReturnBadRequestForInvalidMessageQuery()
+            throws Exception {
+        when(conversationQueryService.listMessages(
+                any(),
+                any()
+        )).thenThrow(
+                new InvalidConversationQueryException(
+                        "Invalid conversation message cursor"
+                )
+        );
+
+        mockMvc.perform(
+                        get(
+                                "/api/v1/conversations/"
+                                        + "901/messages"
+                        )
+                                .param(
+                                        "cursor",
+                                        "malformed"
+                                )
+                )
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.title")
+                        .value(
+                                "Invalid conversation query"
+                        ))
+                .andExpect(jsonPath("$.errorCode")
+                        .value(
+                                "INVALID_CONVERSATION_QUERY"
+                        ))
+                .andExpect(jsonPath("$.detail")
+                        .value(
+                                "Invalid conversation "
+                                        + "message cursor"
+                        ));
+    }
+
+    @Test
+    void shouldRejectNonNumericMessageLimit()
+            throws Exception {
+        mockMvc.perform(
+                        get(
+                                "/api/v1/conversations/"
+                                        + "901/messages"
+                        )
+                                .param("limit", "abc")
+                )
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode")
+                        .value(
+                                "INVALID_CONVERSATION_QUERY"
+                        ));
+
+        verifyNoInteractions(
+                conversationQueryService
+        );
+    }
+
+    @Test
+    void shouldRejectOutOfRangeMessageLimit()
+            throws Exception {
+        mockMvc.perform(
+                        get(
+                                "/api/v1/conversations/"
+                                        + "901/messages"
+                        )
+                                .param("limit", "101")
+                )
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode")
+                        .value(
+                                "INVALID_CONVERSATION_QUERY"
+                        ));
+
+        verifyNoInteractions(
+                conversationQueryService
+        );
     }
 }

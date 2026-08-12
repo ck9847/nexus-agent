@@ -7,6 +7,7 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -158,6 +159,57 @@ public class ConversationExceptionHandler {
         problem.setProperty(
                 "currentStatus",
                 exception.currentStatus().name()
+        );
+
+        return problem;
+    }
+
+    @ExceptionHandler(
+            InvalidConversationQueryException.class
+    )
+    public ProblemDetail
+    handleInvalidConversationQuery(
+            InvalidConversationQueryException exception
+    ) {
+        ProblemDetail problem =
+                ProblemDetail.forStatusAndDetail(
+                        HttpStatus.BAD_REQUEST,
+                        exception.getMessage()
+                );
+
+        problem.setTitle(
+                "Invalid conversation query"
+        );
+
+        problem.setProperty(
+                "errorCode",
+                "INVALID_CONVERSATION_QUERY"
+        );
+
+        return problem;
+    }
+
+    @ExceptionHandler(
+            MethodArgumentTypeMismatchException.class
+    )
+    public ProblemDetail
+    handleQueryParameterTypeMismatch(
+            MethodArgumentTypeMismatchException exception
+    ) {
+        ProblemDetail problem =
+                ProblemDetail.forStatusAndDetail(
+                        HttpStatus.BAD_REQUEST,
+                        "One or more conversation query "
+                                + "parameters are invalid"
+                );
+
+        problem.setTitle(
+                "Invalid conversation query"
+        );
+
+        problem.setProperty(
+                "errorCode",
+                "INVALID_CONVERSATION_QUERY"
         );
 
         return problem;
