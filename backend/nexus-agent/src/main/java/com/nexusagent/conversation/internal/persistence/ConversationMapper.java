@@ -89,4 +89,28 @@ public interface ConversationMapper {
             @Param("expectedVersion") int expectedVersion,
             @Param("lastMessageAt") Instant lastMessageAt
     );
+
+    @Select("""
+        SELECT
+            id,
+            tenant_id,
+            user_id,
+            agent_id,
+            title,
+            status,
+            last_message_at,
+            version,
+            created_at,
+            updated_at
+        FROM conversations
+        WHERE id = #{conversationId}
+          AND tenant_id = #{tenantId}
+          AND user_id = #{userId}
+        LIMIT 1
+        """)
+    Optional<ConversationDetailRow> findOwnedDetail(
+            @Param("conversationId") long conversationId,
+            @Param("tenantId") long tenantId,
+            @Param("userId") long userId
+    );
 }
