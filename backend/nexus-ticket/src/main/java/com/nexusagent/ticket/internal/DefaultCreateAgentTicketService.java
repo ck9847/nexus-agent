@@ -5,12 +5,9 @@ import com.nexusagent.audit.api.AuditLogCommand;
 import com.nexusagent.audit.api.AuditLogWriter;
 import com.nexusagent.audit.api.AuditResult;
 import com.nexusagent.common.id.IdGenerator;
-import com.nexusagent.common.security.CurrentActor;
-import com.nexusagent.common.security.CurrentActorProvider;
-import com.nexusagent.ticket.api.CreateTicketRequest;
+import com.nexusagent.ticket.api.CreateAgentTicketCommand;
+import com.nexusagent.ticket.api.CreateAgentTicketService;
 import com.nexusagent.ticket.api.CreateTicketResponse;
-import com.nexusagent.ticket.api.CreateTicketService;
-import com.nexusagent.ticket.domain.TicketPriority;
 import com.nexusagent.ticket.domain.TicketSource;
 import com.nexusagent.ticket.domain.TicketStatus;
 import com.nexusagent.ticket.internal.persistence.TicketMapper;
@@ -23,52 +20,50 @@ import java.util.Map;
 import java.util.Objects;
 
 @Service
-public class DefaultCreateTicketService
-        implements CreateTicketService {
+@Transactional
+public class DefaultCreateAgentTicketService
+        implements CreateAgentTicketService {
 
-    private final CurrentActorProvider currentActorProvider;
     private final IdGenerator idGenerator;
     private final TicketNumberGenerator ticketNumberGenerator;
     private final TicketMapper ticketMapper;
     private final AuditLogWriter auditLogWriter;
 
-    public DefaultCreateTicketService(
-            CurrentActorProvider currentActorProvider,
+    public DefaultCreateAgentTicketService(
             IdGenerator idGenerator,
             TicketNumberGenerator ticketNumberGenerator,
             TicketMapper ticketMapper,
             AuditLogWriter auditLogWriter
     ) {
-        this.currentActorProvider = currentActorProvider;
-        this.idGenerator = idGenerator;
-        this.ticketNumberGenerator = ticketNumberGenerator;
-        this.ticketMapper = ticketMapper;
-        this.auditLogWriter = auditLogWriter;
+        this.idGenerator = Objects.requireNonNull(
+                idGenerator
+        );
+        this.ticketNumberGenerator = Objects.requireNonNull(
+                ticketNumberGenerator
+        );
+        this.ticketMapper = Objects.requireNonNull(
+                ticketMapper
+        );
+        this.auditLogWriter = Objects.requireNonNull(
+                auditLogWriter
+        );
     }
 
     @Override
-    @Transactional
     public CreateTicketResponse create(
-            CreateTicketRequest request
+            CreateAgentTicketCommand command
     ) {
         Objects.requireNonNull(
-                request,
-                "request must not be null"
+                command,
+                "command must not be null"
         );
-
-        CurrentActor actor =
-                currentActorProvider.requireCurrentActor();
 
         NormalizedTicketCreation input =
                 TicketCreationNormalizer.normalize(
-                        request.title(),
-                        request.description(),
-                        request.priority()
+                        command.title(),
+                        command.description(),
+                        command.priority()
                 );
-
-        String title = input.title();
-        String description = input.description();
-        TicketPriority priority = input.priority();
 
         long ticketId = idGenerator.nextId();
         String ticketNo =
@@ -76,16 +71,16 @@ public class DefaultCreateTicketService
 
         TicketRow row = new TicketRow(
                 ticketId,
-                actor.tenantId(),
+                command.tenantId(),
                 ticketNo,
-                title,
-                description,
-                priority,
+                input.title(),
+                input.description(),
+                input.priority(),
                 TicketStatus.OPEN,
-                TicketSource.USER,
-                actor.userId(),
+                TicketSource.AGENT,
+                command.requesterUserId(),
                 null,
-                null,
+                command.createdByAgentId(),
                 0
         );
 
@@ -98,13 +93,13 @@ public class DefaultCreateTicketService
         }
 
         auditLogWriter.write(new AuditLogCommand(
-                actor.tenantId(),
-                AuditActorType.USER,
-                actor.userId(),
+                command.tenantId(),
+                AuditActorType.AGENT,
+                command.createdByAgentId(),
                 "TICKET_CREATED",
                 "TICKET",
                 ticketId,
-                null,
+                command.toolExecutionId(),
                 AuditResult.SUCCESS,
                 null,
                 null,
@@ -112,10 +107,17 @@ public class DefaultCreateTicketService
                 null,
                 Map.of(
                         "ticketNo", ticketNo,
-                        "title", title,
-                        "priority", priority.name(),
+                        "priority", input.priority().name(),
                         "status", TicketStatus.OPEN.name(),
-                        "source", TicketSource.USER.name()
+                        "source", TicketSource.AGENT.name(),
+                        "requesterUserId",
+                        Long.toString(
+                                command.requesterUserId()
+                        ),
+                        "createdByAgentId",
+                        Long.toString(
+                                command.createdByAgentId()
+                        )
                 ),
                 null,
                 null
