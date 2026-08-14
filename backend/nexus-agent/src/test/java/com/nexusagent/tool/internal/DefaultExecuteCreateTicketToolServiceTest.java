@@ -40,6 +40,7 @@ class DefaultExecuteCreateTicketToolServiceTest {
     private static final long REQUEST_MESSAGE_ID = 1001L;
     private static final long TOOL_EXECUTION_ID = 7001L;
     private static final long TOOL_MESSAGE_ID = 8001L;
+    private static final long FINAL_ASSISTANT_MESSAGE_ID = 8002L;
 
     private static final Instant NOW =
             Instant.parse("2026-08-13T10:15:30.123Z");
@@ -66,6 +67,11 @@ class DefaultExecuteCreateTicketToolServiceTest {
                         "TKT-A1",
                         TicketStatus.OPEN,
                         TOOL_MESSAGE_ID,
+                        3L,
+                        FINAL_ASSISTANT_MESSAGE_ID,
+                        4L,
+                        2,
+                        NOW,
                         true
                 );
 
@@ -108,6 +114,11 @@ class DefaultExecuteCreateTicketToolServiceTest {
                         "TKT-A1",
                         TicketStatus.OPEN,
                         TOOL_MESSAGE_ID,
+                        3L,
+                        FINAL_ASSISTANT_MESSAGE_ID,
+                        4L,
+                        2,
+                        NOW,
                         false
                 );
 
@@ -223,6 +234,55 @@ class DefaultExecuteCreateTicketToolServiceTest {
         assertFalse(
                 failure.errorCode()
                         .contains("provider-secret")
+        );
+    }
+
+    @Test
+    void shouldFinalizeIllegalArgumentFromSucceedAsInvalidInput() {
+        ClaimedCreateTicketToolExecution claim =
+                new ClaimedCreateTicketToolExecution(
+                        context(),
+                        arguments(),
+                        NOW,
+                        null
+                );
+
+        IllegalArgumentException executionFailure =
+                new IllegalArgumentException("schema boom");
+
+        when(transactions.claim(context()))
+                .thenReturn(claim);
+        when(transactions.succeed(claim))
+                .thenThrow(executionFailure);
+
+        IllegalArgumentException thrown =
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () -> service.execute(context())
+                );
+
+        assertSame(executionFailure, thrown);
+
+        ArgumentCaptor<CreateTicketToolFailure> failureCaptor =
+                ArgumentCaptor.forClass(
+                        CreateTicketToolFailure.class
+                );
+
+        verify(transactions).fail(
+                any(),
+                failureCaptor.capture()
+        );
+
+        CreateTicketToolFailure failure =
+                failureCaptor.getValue();
+
+        assertEquals(
+                "INVALID_TOOL_INPUT",
+                failure.errorCode()
+        );
+        assertEquals(
+                "Create ticket tool input is invalid",
+                failure.safeMessage()
         );
     }
 

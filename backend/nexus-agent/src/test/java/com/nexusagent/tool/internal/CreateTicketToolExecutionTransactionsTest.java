@@ -48,12 +48,14 @@ import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -71,6 +73,7 @@ class CreateTicketToolExecutionTransactionsTest {
     private static final long REQUEST_MESSAGE_ID = 1001L;
     private static final long TOOL_EXECUTION_ID = 7001L;
     private static final long TOOL_MESSAGE_ID = 8001L;
+    private static final long FINAL_ASSISTANT_MESSAGE_ID = 8002L;
     private static final long TICKET_ID = 9001L;
 
     private static final String IDEMPOTENCY_KEY =
@@ -282,6 +285,7 @@ class CreateTicketToolExecutionTransactionsTest {
     void shouldReplaySucceededClaimWithoutCreatingTicket() {
         stubConversationLock();
         stubExecutionLock(succeededRow());
+        stubReplayMessageReads();
 
         when(ticketToolJsonCodec.decodeOutput(OUTPUT_JSON))
                 .thenReturn(output());
@@ -297,6 +301,14 @@ class CreateTicketToolExecutionTransactionsTest {
         assertEquals("TKT-A1", replay.ticketNo());
         assertEquals(TicketStatus.OPEN, replay.ticketStatus());
         assertEquals(TOOL_MESSAGE_ID, replay.resultMessageId());
+        assertEquals(3L, replay.resultMessageSequenceNo());
+        assertEquals(
+                FINAL_ASSISTANT_MESSAGE_ID,
+                replay.assistantMessageId()
+        );
+        assertEquals(4L, replay.assistantSequenceNo());
+        assertEquals(1, replay.conversationVersion());
+        assertEquals(NOW, replay.assistantPreparedAt());
         assertTrue(replay.replayed());
         assertNull(claim.arguments());
 
@@ -332,6 +344,7 @@ class CreateTicketToolExecutionTransactionsTest {
                 ConversationStatus.ARCHIVED
         );
         stubExecutionLock(succeededRow());
+        stubReplayMessageReads();
 
         when(ticketToolJsonCodec.decodeOutput(OUTPUT_JSON))
                 .thenReturn(output());
@@ -345,6 +358,14 @@ class CreateTicketToolExecutionTransactionsTest {
         assertEquals("9001", replay.ticketId());
         assertEquals("TKT-A1", replay.ticketNo());
         assertEquals(TOOL_MESSAGE_ID, replay.resultMessageId());
+        assertEquals(3L, replay.resultMessageSequenceNo());
+        assertEquals(
+                FINAL_ASSISTANT_MESSAGE_ID,
+                replay.assistantMessageId()
+        );
+        assertEquals(4L, replay.assistantSequenceNo());
+        assertEquals(1, replay.conversationVersion());
+        assertEquals(NOW, replay.assistantPreparedAt());
         assertTrue(replay.replayed());
 
         verify(toolExecutionMapper, never()).markRunning(
@@ -383,6 +404,7 @@ class CreateTicketToolExecutionTransactionsTest {
                 ConversationStatus.COMPLETED
         );
         stubExecutionLock(succeededRow());
+        stubReplayMessageReads();
 
         when(ticketToolJsonCodec.decodeOutput(OUTPUT_JSON))
                 .thenReturn(output());
@@ -396,6 +418,14 @@ class CreateTicketToolExecutionTransactionsTest {
         assertEquals("9001", replay.ticketId());
         assertEquals("TKT-A1", replay.ticketNo());
         assertEquals(TOOL_MESSAGE_ID, replay.resultMessageId());
+        assertEquals(3L, replay.resultMessageSequenceNo());
+        assertEquals(
+                FINAL_ASSISTANT_MESSAGE_ID,
+                replay.assistantMessageId()
+        );
+        assertEquals(4L, replay.assistantSequenceNo());
+        assertEquals(1, replay.conversationVersion());
+        assertEquals(NOW, replay.assistantPreparedAt());
         assertTrue(replay.replayed());
 
         verify(toolExecutionMapper, never()).markRunning(
@@ -432,6 +462,7 @@ class CreateTicketToolExecutionTransactionsTest {
     void shouldNotDecodeInputWhenReplayingSucceededExecution() {
         stubConversationLock();
         stubExecutionLock(succeededRow());
+        stubReplayMessageReads();
 
         when(ticketToolJsonCodec.decodeOutput(OUTPUT_JSON))
                 .thenReturn(output());
@@ -443,6 +474,43 @@ class CreateTicketToolExecutionTransactionsTest {
 
         verify(ticketToolJsonCodec, never())
                 .decodeArguments(any());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("invalidReplayMessages")
+    void shouldRejectReplayWithInvalidMessage(
+            String description,
+            ToolCallRequestMessageRow toolMessage,
+            ToolCallRequestMessageRow assistantMessage
+    ) {
+        stubConversationLock();
+        stubExecutionLock(succeededRow());
+
+        when(messageMapper.findOwnedMessageByIdForUpdate(
+                TOOL_MESSAGE_ID,
+                TENANT_ID,
+                CONVERSATION_ID
+        )).thenReturn(Optional.of(toolMessage));
+
+        when(messageMapper
+                .findOwnedMessageBySequenceForUpdate(
+                        TENANT_ID,
+                        CONVERSATION_ID,
+                        toolMessage.sequenceNo() + 1
+                )).thenReturn(Optional.of(
+                        assistantMessage
+                ));
+
+        when(ticketToolJsonCodec.decodeOutput(OUTPUT_JSON))
+                .thenReturn(output());
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> transactions.claim(context())
+        );
+
+        verifyNoInteractions(createTicketAgentTool);
+        verifyNoInteractions(auditLogWriter);
     }
 
     @Test
@@ -584,6 +652,7 @@ class CreateTicketToolExecutionTransactionsTest {
     void shouldSucceedWithExactCallOrderAndRows() {
         stubConversationLock();
         stubExecutionLock(runningRow());
+        stubRequestMessageLock();
         stubTicketCreation();
         stubMessageInsert(1);
         stubSequenceAdvance(1);
@@ -610,16 +679,22 @@ class CreateTicketToolExecutionTransactionsTest {
                         TENANT_ID,
                         TOOL_EXECUTION_ID
                 );
+        inOrder.verify(messageMapper)
+                .findCompletedToolCallRequestForUpdate(
+                        REQUEST_MESSAGE_ID,
+                        TENANT_ID,
+                        CONVERSATION_ID
+                );
         inOrder.verify(createTicketAgentTool)
                 .execute(
                         eq(context()),
                         eq(arguments())
                 );
-        inOrder.verify(messageMapper).insert(
+        inOrder.verify(messageMapper, times(2)).insert(
                 any(MessageRow.class)
         );
         inOrder.verify(conversationMapper)
-                .advanceMessageSequence(
+                .advanceForToolContinuation(
                         CONVERSATION_ID,
                         TENANT_ID,
                         REQUESTER_USER_ID,
@@ -645,9 +720,13 @@ class CreateTicketToolExecutionTransactionsTest {
         ArgumentCaptor<MessageRow> messageCaptor =
                 ArgumentCaptor.forClass(MessageRow.class);
 
-        verify(messageMapper).insert(messageCaptor.capture());
+        verify(messageMapper, times(2)).insert(
+                messageCaptor.capture()
+        );
 
-        MessageRow toolMessage = messageCaptor.getValue();
+        List<MessageRow> messages = messageCaptor.getAllValues();
+
+        MessageRow toolMessage = messages.get(0);
 
         assertEquals(TOOL_MESSAGE_ID, toolMessage.id());
         assertEquals(TENANT_ID, toolMessage.tenantId());
@@ -669,12 +748,48 @@ class CreateTicketToolExecutionTransactionsTest {
         assertEquals("{}", toolMessage.metadataJson());
         assertEquals(NOW, toolMessage.createdAt());
 
+        MessageRow placeholder = messages.get(1);
+
+        assertEquals(
+                FINAL_ASSISTANT_MESSAGE_ID,
+                placeholder.id()
+        );
+        assertEquals(TENANT_ID, placeholder.tenantId());
+        assertEquals(
+                CONVERSATION_ID,
+                placeholder.conversationId()
+        );
+        assertEquals(5L, placeholder.sequenceNo());
+        assertEquals(
+                MessageRole.ASSISTANT,
+                placeholder.role()
+        );
+        assertEquals("", placeholder.content());
+        assertEquals(
+                MessageContentType.TEXT,
+                placeholder.contentType()
+        );
+        assertEquals(
+                MessageStatus.CREATING,
+                placeholder.status()
+        );
+        assertEquals(
+                "gpt-5-mini",
+                placeholder.modelName()
+        );
+        assertEquals("{}", placeholder.metadataJson());
+        assertEquals(NOW, placeholder.createdAt());
+
         ArgumentCaptor<Map<String, ?>> metadataCaptor =
                 ArgumentCaptor.forClass(Map.class);
 
-        verify(metadataCodec).encode(metadataCaptor.capture());
+        verify(metadataCodec, times(2)).encode(
+                metadataCaptor.capture()
+        );
 
-        Map<String, ?> metadata = metadataCaptor.getValue();
+        List<Map<String, ?>> encoded = metadataCaptor.getAllValues();
+
+        Map<String, ?> toolMetadata = encoded.get(0);
 
         assertEquals(
                 Set.of(
@@ -682,16 +797,53 @@ class CreateTicketToolExecutionTransactionsTest {
                         "toolCallId",
                         "toolName"
                 ),
-                metadata.keySet()
+                toolMetadata.keySet()
         );
         assertEquals(
                 Long.toString(TOOL_EXECUTION_ID),
-                metadata.get("toolExecutionId")
+                toolMetadata.get("toolExecutionId")
         );
-        assertEquals("call-1", metadata.get("toolCallId"));
+        assertEquals(
+                "call-1",
+                toolMetadata.get("toolCallId")
+        );
         assertEquals(
                 "create_ticket",
-                metadata.get("toolName")
+                toolMetadata.get("toolName")
+        );
+
+        Map<String, ?> continuationMetadata = encoded.get(1);
+
+        assertEquals(
+                Set.of(
+                        "messageKind",
+                        "toolExecutionId",
+                        "toolCallId",
+                        "resultMessageId",
+                        "conversationVersion"
+                ),
+                continuationMetadata.keySet()
+        );
+        assertEquals(
+                "TOOL_CONTINUATION",
+                continuationMetadata.get("messageKind")
+        );
+        assertEquals(
+                Long.toString(TOOL_EXECUTION_ID),
+                continuationMetadata.get("toolExecutionId")
+        );
+        assertEquals(
+                "call-1",
+                continuationMetadata.get("toolCallId")
+        );
+        assertEquals(
+                Long.toString(TOOL_MESSAGE_ID),
+                continuationMetadata.get("resultMessageId")
+        );
+        assertEquals(
+                2,
+                continuationMetadata
+                        .get("conversationVersion")
         );
 
         assertEquals(
@@ -702,13 +854,29 @@ class CreateTicketToolExecutionTransactionsTest {
         assertEquals("TKT-A1", result.ticketNo());
         assertEquals(TicketStatus.OPEN, result.ticketStatus());
         assertEquals(TOOL_MESSAGE_ID, result.resultMessageId());
+        assertEquals(4L, result.resultMessageSequenceNo());
+        assertEquals(
+                FINAL_ASSISTANT_MESSAGE_ID,
+                result.assistantMessageId()
+        );
+        assertEquals(5L, result.assistantSequenceNo());
+        assertEquals(2, result.conversationVersion());
+        assertEquals(NOW, result.assistantPreparedAt());
         assertFalse(result.replayed());
+
+        assertNotEquals(
+                result.resultMessageId(),
+                result.assistantMessageId()
+        );
+        assertTrue(result.resultMessageId() > 0);
+        assertTrue(result.assistantMessageId() > 0);
     }
 
     @Test
     void shouldWriteSafeSuccessAudits() {
         stubConversationLock();
         stubExecutionLock(runningRow());
+        stubRequestMessageLock();
         stubTicketCreation();
         stubMessageInsert(1);
         stubSequenceAdvance(1);
@@ -719,7 +887,7 @@ class CreateTicketToolExecutionTransactionsTest {
         ArgumentCaptor<AuditLogCommand> auditCaptor =
                 ArgumentCaptor.forClass(AuditLogCommand.class);
 
-        verify(auditLogWriter, times(2)).write(
+        verify(auditLogWriter, times(3)).write(
                 auditCaptor.capture()
         );
 
@@ -754,6 +922,87 @@ class CreateTicketToolExecutionTransactionsTest {
         assertFalse(afterData.containsKey("input"));
         assertFalse(afterData.containsKey("title"));
         assertFalse(afterData.containsKey("description"));
+
+        AuditLogCommand continuation = audits.stream()
+                .filter(command ->
+                        "CONVERSATION_TOOL_CONTINUATION_PREPARED"
+                                .equals(command.action())
+                )
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals(
+                AuditActorType.AGENT,
+                continuation.actorType()
+        );
+        assertEquals(AGENT_ID, continuation.actorId());
+        assertEquals(
+                "MESSAGE",
+                continuation.resourceType()
+        );
+        assertEquals(
+                FINAL_ASSISTANT_MESSAGE_ID,
+                continuation.resourceId()
+        );
+        assertEquals(
+                TOOL_EXECUTION_ID,
+                continuation.toolExecutionId()
+        );
+        assertEquals(
+                AuditResult.SUCCESS,
+                continuation.result()
+        );
+
+        Map<String, Object> continuationAfter =
+                (Map<String, Object>) continuation.afterData();
+
+        assertEquals(
+                Set.of(
+                        "conversationId",
+                        "messageId",
+                        "sequenceNo",
+                        "status",
+                        "toolExecutionId",
+                        "resultMessageId",
+                        "conversationVersion",
+                        "preparedAt"
+                ),
+                continuationAfter.keySet()
+        );
+        assertEquals(
+                Long.toString(CONVERSATION_ID),
+                continuationAfter.get("conversationId")
+        );
+        assertEquals(
+                Long.toString(FINAL_ASSISTANT_MESSAGE_ID),
+                continuationAfter.get("messageId")
+        );
+        assertEquals(5L, continuationAfter.get("sequenceNo"));
+        assertEquals(
+                "CREATING",
+                continuationAfter.get("status")
+        );
+        assertEquals(
+                Long.toString(TOOL_EXECUTION_ID),
+                continuationAfter.get("toolExecutionId")
+        );
+        assertEquals(
+                Long.toString(TOOL_MESSAGE_ID),
+                continuationAfter.get("resultMessageId")
+        );
+        assertEquals(
+                2,
+                continuationAfter.get("conversationVersion")
+        );
+        assertEquals(
+                NOW.toString(),
+                continuationAfter.get("preparedAt")
+        );
+
+        assertFalse(continuationAfter.containsKey("input"));
+        assertFalse(continuationAfter.containsKey("title"));
+        assertFalse(continuationAfter.containsKey("description"));
+        assertFalse(continuationAfter.containsKey("output"));
     }
 
     @Test
@@ -776,6 +1025,7 @@ class CreateTicketToolExecutionTransactionsTest {
     ) {
         stubConversationLock();
         stubExecutionLock(runningRow());
+        stubRequestMessageLock();
         stubTicketCreation();
         stubMessageInsert(affectedRows);
 
@@ -785,7 +1035,7 @@ class CreateTicketToolExecutionTransactionsTest {
         );
 
         verify(conversationMapper, never())
-                .advanceMessageSequence(
+                .advanceForToolContinuation(
                         any(Long.class),
                         any(Long.class),
                         any(Long.class),
@@ -813,6 +1063,7 @@ class CreateTicketToolExecutionTransactionsTest {
     void shouldRejectSucceedWhenSequenceAdvanceFails() {
         stubConversationLock();
         stubExecutionLock(runningRow());
+        stubRequestMessageLock();
         stubTicketCreation();
         stubMessageInsert(1);
         stubSequenceAdvance(0);
@@ -844,6 +1095,7 @@ class CreateTicketToolExecutionTransactionsTest {
     ) {
         stubConversationLock();
         stubExecutionLock(runningRow());
+        stubRequestMessageLock();
         stubTicketCreation();
         stubMessageInsert(1);
         stubSequenceAdvance(1);
@@ -854,6 +1106,237 @@ class CreateTicketToolExecutionTransactionsTest {
                 () -> transactions.succeed(claim())
         );
 
+        verifyNoInteractions(auditLogWriter);
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 2})
+    void shouldRejectSucceedWhenSecondMessageInsertFails(
+            int secondInsertRows
+    ) {
+        stubConversationLock();
+        stubExecutionLock(runningRow());
+        stubRequestMessageLock();
+        stubTicketCreation();
+        stubMessageInserts(1, secondInsertRows);
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> transactions.succeed(claim())
+        );
+
+        verify(conversationMapper, never())
+                .advanceForToolContinuation(
+                        any(Long.class),
+                        any(Long.class),
+                        any(Long.class),
+                        any(Long.class),
+                        any(Integer.class),
+                        any()
+                );
+        verify(toolExecutionMapper, never()).markSucceeded(
+                any(Long.class),
+                any(Long.class),
+                any(Long.class),
+                any(Long.class),
+                any(Long.class),
+                any(),
+                any(Long.class),
+                any(),
+                any(Long.class),
+                any(),
+                any(Long.class)
+        );
+        verifyNoInteractions(auditLogWriter);
+    }
+
+    @Test
+    void shouldRejectSucceedWhenSequenceIsExhausted() {
+        stubConversationLockWith(
+                Long.MAX_VALUE,
+                1
+        );
+        stubExecutionLock(runningRow());
+
+        when(messageMapper
+                .findCompletedToolCallRequestForUpdate(
+                        REQUEST_MESSAGE_ID,
+                        TENANT_ID,
+                        CONVERSATION_ID
+                )).thenReturn(Optional.of(
+                        requestMessageRow(
+                                Long.MAX_VALUE - 1
+                        )
+                ));
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> transactions.succeed(claim())
+        );
+
+        verifyNoInteractions(createTicketAgentTool);
+        verifyNoInteractions(idGenerator);
+        verifyNoInteractions(auditLogWriter);
+    }
+
+    @Test
+    void shouldRejectSucceedWhenVersionIsExhausted() {
+        stubConversationLockWith(
+                4L,
+                Integer.MAX_VALUE
+        );
+        stubExecutionLock(runningRow());
+        stubRequestMessageLock();
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> transactions.succeed(claim())
+        );
+
+        verifyNoInteractions(createTicketAgentTool);
+        verifyNoInteractions(idGenerator);
+        verifyNoInteractions(auditLogWriter);
+    }
+
+    @Test
+    void shouldRejectSucceedWhenGeneratedMessageIdsAreNotDistinct() {
+        stubConversationLock();
+        stubExecutionLock(runningRow());
+        stubRequestMessageLock();
+
+        when(createTicketAgentTool.execute(
+                any(AgentToolExecutionContext.class),
+                any(CreateTicketToolArguments.class)
+        )).thenReturn(new CreateTicketResponse(
+                Long.toString(TICKET_ID),
+                "TKT-A1",
+                TicketStatus.OPEN
+        ));
+
+        when(idGenerator.nextId())
+                .thenReturn(TOOL_MESSAGE_ID)
+                .thenReturn(TOOL_MESSAGE_ID);
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> transactions.succeed(claim())
+        );
+
+        verify(messageMapper, never()).insert(
+                any(MessageRow.class)
+        );
+        verify(conversationMapper, never())
+                .advanceForToolContinuation(
+                        any(Long.class),
+                        any(Long.class),
+                        any(Long.class),
+                        any(Long.class),
+                        any(Integer.class),
+                        any()
+                );
+        verify(toolExecutionMapper, never()).markSucceeded(
+                any(Long.class),
+                any(Long.class),
+                any(Long.class),
+                any(Long.class),
+                any(Long.class),
+                any(),
+                any(Long.class),
+                any(),
+                any(Long.class),
+                any(),
+                any(Long.class)
+        );
+        verifyNoInteractions(auditLogWriter);
+    }
+
+    @Test
+    void shouldPropagateAuditFailureInSucceed() {
+        stubConversationLock();
+        stubExecutionLock(runningRow());
+        stubRequestMessageLock();
+        stubTicketCreation();
+        stubMessageInsert(1);
+        stubSequenceAdvance(1);
+        stubMarkSucceeded(1);
+
+        IllegalStateException failure =
+                new IllegalStateException("audit boom");
+
+        doThrow(failure)
+                .when(auditLogWriter)
+                .write(any(AuditLogCommand.class));
+
+        IllegalStateException thrown =
+                assertThrows(
+                        IllegalStateException.class,
+                        () -> transactions.succeed(claim())
+                );
+
+        assertSame(failure, thrown);
+
+        verify(toolExecutionMapper).markSucceeded(
+                any(Long.class),
+                any(Long.class),
+                any(Long.class),
+                any(Long.class),
+                any(Long.class),
+                any(),
+                any(Long.class),
+                any(),
+                any(Long.class),
+                any(),
+                any(Long.class)
+        );
+    }
+
+    @Test
+    void shouldRejectSucceedWhenRequestMessageMissing() {
+        stubConversationLock();
+        stubExecutionLock(runningRow());
+
+        when(messageMapper
+                .findCompletedToolCallRequestForUpdate(
+                        REQUEST_MESSAGE_ID,
+                        TENANT_ID,
+                        CONVERSATION_ID
+                )).thenReturn(Optional.empty());
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> transactions.succeed(claim())
+        );
+
+        verifyNoInteractions(createTicketAgentTool);
+        verify(messageMapper, never()).insert(
+                any(MessageRow.class)
+        );
+        verifyNoInteractions(auditLogWriter);
+    }
+
+    @Test
+    void shouldRejectSucceedWhenSequenceDoesNotFollowRequest() {
+        stubConversationLock();
+        stubExecutionLock(runningRow());
+
+        when(messageMapper
+                .findCompletedToolCallRequestForUpdate(
+                        REQUEST_MESSAGE_ID,
+                        TENANT_ID,
+                        CONVERSATION_ID
+                )).thenReturn(Optional.of(
+                        requestMessageRow(2L)
+                ));
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> transactions.succeed(claim())
+        );
+
+        verifyNoInteractions(createTicketAgentTool);
+        verify(messageMapper, never()).insert(
+                any(MessageRow.class)
+        );
         verifyNoInteractions(auditLogWriter);
     }
 
@@ -1015,6 +1498,27 @@ class CreateTicketToolExecutionTransactionsTest {
         )).thenReturn(Optional.of(stateRow(status)));
     }
 
+    private void stubConversationLockWith(
+            long nextMessageSequence,
+            int version
+    ) {
+        when(conversationMapper.findOwnedTurnForUpdate(
+                CONVERSATION_ID,
+                TENANT_ID,
+                REQUESTER_USER_ID
+        )).thenReturn(Optional.of(
+                new ConversationTurnStateRow(
+                        CONVERSATION_ID,
+                        TENANT_ID,
+                        REQUESTER_USER_ID,
+                        AGENT_ID,
+                        ConversationStatus.ACTIVE,
+                        nextMessageSequence,
+                        version
+                )
+        ));
+    }
+
     private void stubExecutionLock(ToolExecutionRow row) {
         when(toolExecutionMapper
                 .findByTenantIdAndIdForUpdate(
@@ -1035,6 +1539,88 @@ class CreateTicketToolExecutionTransactionsTest {
         )).thenReturn(1);
     }
 
+    private void stubRequestMessageLock() {
+        when(messageMapper
+                .findCompletedToolCallRequestForUpdate(
+                        REQUEST_MESSAGE_ID,
+                        TENANT_ID,
+                        CONVERSATION_ID
+                )).thenReturn(Optional.of(
+                        requestMessageRow()
+                ));
+    }
+
+    private void stubReplayMessageReads() {
+        when(messageMapper.findOwnedMessageByIdForUpdate(
+                TOOL_MESSAGE_ID,
+                TENANT_ID,
+                CONVERSATION_ID
+        )).thenReturn(Optional.of(toolMessageRow()));
+
+        when(messageMapper
+                .findOwnedMessageBySequenceForUpdate(
+                        TENANT_ID,
+                        CONVERSATION_ID,
+                        4L
+                )).thenReturn(Optional.of(
+                        assistantMessageRow()
+                ));
+    }
+
+    private static ToolCallRequestMessageRow requestMessageRow() {
+        return requestMessageRow(3L);
+    }
+
+    private static ToolCallRequestMessageRow requestMessageRow(
+            long sequenceNo
+    ) {
+        return new ToolCallRequestMessageRow(
+                REQUEST_MESSAGE_ID,
+                TENANT_ID,
+                CONVERSATION_ID,
+                sequenceNo,
+                MessageRole.ASSISTANT,
+                INPUT_JSON,
+                MessageContentType.JSON,
+                MessageStatus.COMPLETED,
+                "gpt-5-mini",
+                "{}",
+                NOW
+        );
+    }
+
+    private static ToolCallRequestMessageRow toolMessageRow() {
+        return new ToolCallRequestMessageRow(
+                TOOL_MESSAGE_ID,
+                TENANT_ID,
+                CONVERSATION_ID,
+                3L,
+                MessageRole.TOOL,
+                OUTPUT_JSON,
+                MessageContentType.JSON,
+                MessageStatus.COMPLETED,
+                null,
+                "{}",
+                NOW
+        );
+    }
+
+    private static ToolCallRequestMessageRow assistantMessageRow() {
+        return new ToolCallRequestMessageRow(
+                FINAL_ASSISTANT_MESSAGE_ID,
+                TENANT_ID,
+                CONVERSATION_ID,
+                4L,
+                MessageRole.ASSISTANT,
+                "",
+                MessageContentType.TEXT,
+                MessageStatus.CREATING,
+                "gpt-5-mini",
+                "{}",
+                NOW
+        );
+    }
+
     private void stubTicketCreation() {
         when(createTicketAgentTool.execute(
                 any(AgentToolExecutionContext.class),
@@ -1046,7 +1632,8 @@ class CreateTicketToolExecutionTransactionsTest {
         ));
 
         when(idGenerator.nextId())
-                .thenReturn(TOOL_MESSAGE_ID);
+                .thenReturn(TOOL_MESSAGE_ID)
+                .thenReturn(FINAL_ASSISTANT_MESSAGE_ID);
 
         when(ticketToolJsonCodec.encodeOutput(
                 any(CreateTicketToolOutput.class)
@@ -1061,13 +1648,30 @@ class CreateTicketToolExecutionTransactionsTest {
                 .thenReturn(affectedRows);
     }
 
+    private void stubMessageInserts(
+            int first,
+            int second
+    ) {
+        when(messageMapper.insert(any()))
+                .thenReturn(first)
+                .thenReturn(second);
+    }
+
     private void stubSequenceAdvance(int affectedRows) {
-        when(conversationMapper.advanceMessageSequence(
+        stubSequenceAdvance(4L, 1, affectedRows);
+    }
+
+    private void stubSequenceAdvance(
+            long nextSequence,
+            int version,
+            int affectedRows
+    ) {
+        when(conversationMapper.advanceForToolContinuation(
                 CONVERSATION_ID,
                 TENANT_ID,
                 REQUESTER_USER_ID,
-                4L,
-                1,
+                nextSequence,
+                version,
                 NOW
         )).thenReturn(affectedRows);
     }
@@ -1235,6 +1839,240 @@ class CreateTicketToolExecutionTransactionsTest {
                 0L,
                 NOW,
                 NOW
+        );
+    }
+
+    private static ToolCallRequestMessageRow withToolMessage(
+            MessageRole role,
+            MessageStatus status,
+            MessageContentType contentType,
+            String content,
+            long sequenceNo
+    ) {
+        return new ToolCallRequestMessageRow(
+                TOOL_MESSAGE_ID,
+                TENANT_ID,
+                CONVERSATION_ID,
+                sequenceNo,
+                role,
+                content,
+                contentType,
+                status,
+                null,
+                "{}",
+                NOW
+        );
+    }
+
+    private static ToolCallRequestMessageRow withAssistantMessage(
+            long id,
+            MessageRole role,
+            MessageContentType contentType,
+            long sequenceNo,
+            String modelName,
+            MessageStatus status
+    ) {
+        return new ToolCallRequestMessageRow(
+                id,
+                TENANT_ID,
+                CONVERSATION_ID,
+                sequenceNo,
+                role,
+                "",
+                contentType,
+                status,
+                modelName,
+                "{}",
+                NOW
+        );
+    }
+
+    private static Stream<org.junit.jupiter.params.provider.Arguments>
+    invalidReplayMessages() {
+        ToolCallRequestMessageRow tool = toolMessageRow();
+        ToolCallRequestMessageRow assistant =
+                assistantMessageRow();
+
+        return Stream.of(
+                org.junit.jupiter.params.provider.Arguments.of(
+                        "tool id",
+                        new ToolCallRequestMessageRow(
+                                TOOL_MESSAGE_ID + 999L,
+                                TENANT_ID,
+                                CONVERSATION_ID,
+                                3L,
+                                MessageRole.TOOL,
+                                OUTPUT_JSON,
+                                MessageContentType.JSON,
+                                MessageStatus.COMPLETED,
+                                null,
+                                "{}",
+                                NOW
+                        ),
+                        assistant
+                ),
+                org.junit.jupiter.params.provider.Arguments.of(
+                        "tool role",
+                        withToolMessage(
+                                MessageRole.ASSISTANT,
+                                MessageStatus.COMPLETED,
+                                MessageContentType.JSON,
+                                OUTPUT_JSON,
+                                3L
+                        ),
+                        assistant
+                ),
+                org.junit.jupiter.params.provider.Arguments.of(
+                        "tool status",
+                        withToolMessage(
+                                MessageRole.TOOL,
+                                MessageStatus.CREATING,
+                                MessageContentType.JSON,
+                                OUTPUT_JSON,
+                                3L
+                        ),
+                        assistant
+                ),
+                org.junit.jupiter.params.provider.Arguments.of(
+                        "tool content type",
+                        withToolMessage(
+                                MessageRole.TOOL,
+                                MessageStatus.COMPLETED,
+                                MessageContentType.TEXT,
+                                OUTPUT_JSON,
+                                3L
+                        ),
+                        assistant
+                ),
+                org.junit.jupiter.params.provider.Arguments.of(
+                        "tool content empty",
+                        withToolMessage(
+                                MessageRole.TOOL,
+                                MessageStatus.COMPLETED,
+                                MessageContentType.JSON,
+                                "",
+                                3L
+                        ),
+                        assistant
+                ),
+                org.junit.jupiter.params.provider.Arguments.of(
+                        "tool content null",
+                        withToolMessage(
+                                MessageRole.TOOL,
+                                MessageStatus.COMPLETED,
+                                MessageContentType.JSON,
+                                null,
+                                3L
+                        ),
+                        assistant
+                ),
+                org.junit.jupiter.params.provider.Arguments.of(
+                        "tool sequence",
+                        withToolMessage(
+                                MessageRole.TOOL,
+                                MessageStatus.COMPLETED,
+                                MessageContentType.JSON,
+                                OUTPUT_JSON,
+                                0L
+                        ),
+                        assistant
+                ),
+                org.junit.jupiter.params.provider.Arguments.of(
+                        "assistant id",
+                        tool,
+                        withAssistantMessage(
+                                0L,
+                                MessageRole.ASSISTANT,
+                                MessageContentType.TEXT,
+                                4L,
+                                "gpt-5-mini",
+                                MessageStatus.CREATING
+                        )
+                ),
+                org.junit.jupiter.params.provider.Arguments.of(
+                        "assistant id duplicate",
+                        tool,
+                        withAssistantMessage(
+                                TOOL_MESSAGE_ID,
+                                MessageRole.ASSISTANT,
+                                MessageContentType.TEXT,
+                                4L,
+                                "gpt-5-mini",
+                                MessageStatus.CREATING
+                        )
+                ),
+                org.junit.jupiter.params.provider.Arguments.of(
+                        "assistant role",
+                        tool,
+                        withAssistantMessage(
+                                FINAL_ASSISTANT_MESSAGE_ID,
+                                MessageRole.TOOL,
+                                MessageContentType.TEXT,
+                                4L,
+                                "gpt-5-mini",
+                                MessageStatus.CREATING
+                        )
+                ),
+                org.junit.jupiter.params.provider.Arguments.of(
+                        "assistant content type",
+                        tool,
+                        withAssistantMessage(
+                                FINAL_ASSISTANT_MESSAGE_ID,
+                                MessageRole.ASSISTANT,
+                                MessageContentType.JSON,
+                                4L,
+                                "gpt-5-mini",
+                                MessageStatus.CREATING
+                        )
+                ),
+                org.junit.jupiter.params.provider.Arguments.of(
+                        "assistant sequence",
+                        tool,
+                        withAssistantMessage(
+                                FINAL_ASSISTANT_MESSAGE_ID,
+                                MessageRole.ASSISTANT,
+                                MessageContentType.TEXT,
+                                5L,
+                                "gpt-5-mini",
+                                MessageStatus.CREATING
+                        )
+                ),
+                org.junit.jupiter.params.provider.Arguments.of(
+                        "assistant model name null",
+                        tool,
+                        withAssistantMessage(
+                                FINAL_ASSISTANT_MESSAGE_ID,
+                                MessageRole.ASSISTANT,
+                                MessageContentType.TEXT,
+                                4L,
+                                null,
+                                MessageStatus.CREATING
+                        )
+                ),
+                org.junit.jupiter.params.provider.Arguments.of(
+                        "assistant model name empty",
+                        tool,
+                        withAssistantMessage(
+                                FINAL_ASSISTANT_MESSAGE_ID,
+                                MessageRole.ASSISTANT,
+                                MessageContentType.TEXT,
+                                4L,
+                                "",
+                                MessageStatus.CREATING
+                        )
+                ),
+                org.junit.jupiter.params.provider.Arguments.of(
+                        "assistant status",
+                        tool,
+                        withAssistantMessage(
+                                FINAL_ASSISTANT_MESSAGE_ID,
+                                MessageRole.ASSISTANT,
+                                MessageContentType.TEXT,
+                                4L,
+                                "gpt-5-mini",
+                                null
+                        )
+                )
         );
     }
 

@@ -3,10 +3,19 @@ package com.nexusagent;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.nexusagent.agent.api.ActiveAgentRuntime;
+import com.nexusagent.agent.domain.AgentModelProvider;
 import com.nexusagent.audit.api.AuditLogWriter;
 import com.nexusagent.common.security.CurrentActor;
 import com.nexusagent.common.security.CurrentActorProvider;
 import com.nexusagent.conversation.api.ConversationNotFoundException;
+import com.nexusagent.conversation.internal.CompleteConversationToolCallService;
+import com.nexusagent.conversation.internal.PreparedConversationTurn;
+import com.nexusagent.model.api.ChatModelMessage;
+import com.nexusagent.model.api.ChatModelOptions;
+import com.nexusagent.model.api.ChatModelRequest;
+import com.nexusagent.model.api.ChatModelToolCall;
+import com.nexusagent.model.api.ChatTokenUsage;
 import com.nexusagent.tool.api.RegisterToolExecutionCommand;
 import com.nexusagent.tool.api.RegisterToolExecutionResult;
 import com.nexusagent.tool.api.RegisterToolExecutionService;
@@ -32,6 +41,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -45,6 +55,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -80,6 +91,10 @@ class CreateTicketToolExecutionIT {
 
     @Autowired
     private DefaultExecuteCreateTicketToolService executeService;
+
+    @Autowired
+    private CompleteConversationToolCallService
+            toolCallCompleteService;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -119,6 +134,12 @@ class CreateTicketToolExecutionIT {
                         false
                 );
 
+        completeFirstRound(
+                fixture,
+                execution,
+                input
+        );
+
         ExecuteCreateTicketToolResult result =
                 executeService.execute(
                         context(fixture, execution)
@@ -128,9 +149,17 @@ class CreateTicketToolExecutionIT {
 
         long ticketId = Long.parseLong(result.ticketId());
         long toolMessageId = result.resultMessageId();
+        long finalAssistantMessageId =
+                result.assistantMessageId();
 
         assertTrue(ticketId > 0);
         assertTrue(toolMessageId > 0);
+        assertTrue(finalAssistantMessageId > 0);
+        assertNotEquals(toolMessageId, finalAssistantMessageId);
+        assertEquals(3L, result.resultMessageSequenceNo());
+        assertEquals(4L, result.assistantSequenceNo());
+        assertEquals(1, result.conversationVersion());
+        assertNotNull(result.assistantPreparedAt());
         assertNotNull(result.ticketNo());
         assertFalse(result.ticketNo().isBlank());
 
@@ -166,11 +195,53 @@ class CreateTicketToolExecutionIT {
                         fixture.conversationId()
                 );
 
-        assertEquals(3, messages.size());
+        assertEquals(4, messages.size());
 
-        MessageDatabaseRow toolMessage =
-                messages.get(2);
+        assertEquals(
+                List.of("USER", "ASSISTANT", "TOOL",
+                        "ASSISTANT"),
+                messages.stream()
+                        .map(MessageDatabaseRow::role)
+                        .toList()
+        );
 
+        MessageDatabaseRow requestMessage =
+                messages.get(1);
+
+        assertEquals(
+                fixture.assistantMessageId(),
+                requestMessage.id()
+        );
+        assertEquals(2L, requestMessage.sequenceNo());
+        assertEquals("COMPLETED", requestMessage.status());
+        assertEquals("JSON", requestMessage.contentType());
+        assertEquals(
+                "gpt-5-mini",
+                requestMessage.modelName()
+        );
+
+        JsonNode requestContent = parseJson(
+                requestMessage.content()
+        );
+
+        assertEquals(
+                execution.toolCallId(),
+                requestContent.get("id").asText()
+        );
+        assertEquals(
+                "create_ticket",
+                requestContent.get("name").asText()
+        );
+        assertEquals(
+                "  Server down  ",
+                requestContent.get("arguments")
+                        .get("title")
+                        .asText()
+        );
+
+        MessageDatabaseRow toolMessage = messages.get(2);
+
+        assertEquals(toolMessageId, toolMessage.id());
         assertEquals(3L, toolMessage.sequenceNo());
         assertEquals("TOOL", toolMessage.role());
         assertEquals("JSON", toolMessage.contentType());
@@ -192,22 +263,77 @@ class CreateTicketToolExecutionIT {
         assertEquals("OPEN", content.get("status").asText());
         assertEquals(3, content.size());
 
-        JsonNode metadata = parseJson(
+        JsonNode toolMetadata = parseJson(
                 toolMessage.metadataJson()
         );
 
-        assertEquals(3, metadata.size());
+        assertEquals(3, toolMetadata.size());
         assertEquals(
                 Long.toString(execution.toolExecutionId()),
-                metadata.get("toolExecutionId").asText()
+                toolMetadata.get("toolExecutionId").asText()
         );
         assertEquals(
                 execution.toolCallId(),
-                metadata.get("toolCallId").asText()
+                toolMetadata.get("toolCallId").asText()
         );
         assertEquals(
                 "create_ticket",
-                metadata.get("toolName").asText()
+                toolMetadata.get("toolName").asText()
+        );
+
+        MessageDatabaseRow continuation =
+                messages.get(3);
+
+        assertEquals(
+                finalAssistantMessageId,
+                continuation.id()
+        );
+        assertEquals(4L, continuation.sequenceNo());
+        assertEquals("ASSISTANT", continuation.role());
+        assertEquals("", continuation.content());
+        assertEquals("TEXT", continuation.contentType());
+        assertEquals("CREATING", continuation.status());
+        assertEquals(
+                "gpt-5-mini",
+                continuation.modelName()
+        );
+        assertNull(continuation.promptTokens());
+        assertNull(continuation.completionTokens());
+
+        JsonNode continuationMetadata = parseJson(
+                continuation.metadataJson()
+        );
+
+        assertEquals(5, continuationMetadata.size());
+        assertEquals(
+                "TOOL_CONTINUATION",
+                continuationMetadata
+                        .get("messageKind")
+                        .asText()
+        );
+        assertEquals(
+                Long.toString(execution.toolExecutionId()),
+                continuationMetadata
+                        .get("toolExecutionId")
+                        .asText()
+        );
+        assertEquals(
+                execution.toolCallId(),
+                continuationMetadata
+                        .get("toolCallId")
+                        .asText()
+        );
+        assertEquals(
+                Long.toString(toolMessageId),
+                continuationMetadata
+                        .get("resultMessageId")
+                        .asText()
+        );
+        assertEquals(
+                1,
+                continuationMetadata
+                        .get("conversationVersion")
+                        .asInt()
         );
 
         ConversationSnapshot conversation =
@@ -217,7 +343,7 @@ class CreateTicketToolExecutionIT {
                 );
 
         assertEquals("ACTIVE", conversation.status());
-        assertEquals(4L, conversation.nextMessageSequence());
+        assertEquals(5L, conversation.nextMessageSequence());
         assertEquals(1, conversation.version());
 
         ToolExecutionDatabaseRow executionRow =
@@ -244,9 +370,11 @@ class CreateTicketToolExecutionIT {
 
         for (String action : List.of(
                 "TOOL_EXECUTION_REGISTERED",
+                "CONVERSATION_TOOL_CALL_COMPLETED",
                 "TOOL_EXECUTION_STARTED",
                 "TICKET_CREATED",
                 "TOOL_MESSAGE_WRITTEN",
+                "CONVERSATION_TOOL_CONTINUATION_PREPARED",
                 "TOOL_EXECUTION_SUCCEEDED"
         )) {
             assertEquals(
@@ -289,6 +417,12 @@ class CreateTicketToolExecutionIT {
                         input,
                         false
                 );
+
+        completeFirstRound(
+                fixture,
+                execution,
+                input
+        );
 
         ExecuteCreateTicketToolResult first =
                 executeService.execute(
@@ -337,6 +471,26 @@ class CreateTicketToolExecutionIT {
                 first.toolExecutionId(),
                 replay.toolExecutionId()
         );
+        assertEquals(
+                first.resultMessageSequenceNo(),
+                replay.resultMessageSequenceNo()
+        );
+        assertEquals(
+                first.assistantMessageId(),
+                replay.assistantMessageId()
+        );
+        assertEquals(
+                first.assistantSequenceNo(),
+                replay.assistantSequenceNo()
+        );
+        assertEquals(
+                first.conversationVersion(),
+                replay.conversationVersion()
+        );
+        assertEquals(
+                first.assistantPreparedAt(),
+                replay.assistantPreparedAt()
+        );
 
         assertEquals(
                 ticketsBefore,
@@ -352,6 +506,11 @@ class CreateTicketToolExecutionIT {
         assertEquals(
                 auditsBefore,
                 countAudits(fixture.tenantId())
+        );
+
+        assertEquals(
+                4L,
+                messagesBefore
         );
 
         ConversationSnapshot conversationAfter =
@@ -491,6 +650,12 @@ class CreateTicketToolExecutionIT {
                         false
                 );
 
+        completeFirstRound(
+                fixture,
+                execution,
+                validInput()
+        );
+
         AuditLogWriter target =
                 AopTestUtils.getUltimateTargetObject(
                         auditLogWriter
@@ -564,10 +729,24 @@ class CreateTicketToolExecutionIT {
                 )
         );
         assertEquals(
+                0L,
+                countAudits(
+                        fixture.tenantId(),
+                        "CONVERSATION_TOOL_CONTINUATION_PREPARED"
+                )
+        );
+        assertEquals(
                 1L,
                 countAudits(
                         fixture.tenantId(),
                         "TOOL_EXECUTION_STARTED"
+                )
+        );
+        assertEquals(
+                1L,
+                countAudits(
+                        fixture.tenantId(),
+                        "CONVERSATION_TOOL_CALL_COMPLETED"
                 )
         );
         assertEquals(
@@ -592,6 +771,12 @@ class CreateTicketToolExecutionIT {
                         validInput(),
                         false
                 );
+
+        completeFirstRound(
+                fixture,
+                execution,
+                validInput()
+        );
 
         AgentToolExecutionContext context =
                 context(fixture, execution);
@@ -666,7 +851,7 @@ class CreateTicketToolExecutionIT {
                     countTickets(fixture.tenantId())
             );
             assertEquals(
-                    3L,
+                    4L,
                     countMessages(
                             fixture.tenantId(),
                             fixture.conversationId()
@@ -689,15 +874,17 @@ class CreateTicketToolExecutionIT {
 
             assertEquals("ACTIVE", conversation.status());
             assertEquals(
-                    4L,
+                    5L,
                     conversation.nextMessageSequence()
             );
             assertEquals(1, conversation.version());
 
             for (String action : List.of(
+                    "CONVERSATION_TOOL_CALL_COMPLETED",
                     "TOOL_EXECUTION_STARTED",
                     "TICKET_CREATED",
                     "TOOL_MESSAGE_WRITTEN",
+                    "CONVERSATION_TOOL_CONTINUATION_PREPARED",
                     "TOOL_EXECUTION_SUCCEEDED"
             )) {
                 assertEquals(
@@ -962,6 +1149,294 @@ class CreateTicketToolExecutionIT {
         assertEquals("ACTIVE", conversation.status());
         assertEquals(3L, conversation.nextMessageSequence());
         assertEquals(0, conversation.version());
+    }
+
+    @Test
+    void shouldRejectWhenRequestMessageIsNotCompletedJson()
+            throws Exception {
+        Fixture fixture = insertFixture();
+        mockCurrentActor(fixture);
+
+        RegisteredExecution execution =
+                registerCreateTicket(
+                        fixture,
+                        "call-not-json",
+                        validInput(),
+                        false
+                );
+
+        jdbcTemplate.update(
+                """
+                UPDATE messages
+                SET status = 'COMPLETED'
+                WHERE id = ?
+                """,
+                fixture.assistantMessageId()
+        );
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> executeService.execute(
+                        context(fixture, execution)
+                )
+        );
+
+        ToolExecutionDatabaseRow executionRow =
+                readExecution(
+                        fixture.tenantId(),
+                        execution.toolExecutionId()
+                );
+
+        assertEquals("FAILED", executionRow.status());
+
+        assertEquals(0L, countTickets(fixture.tenantId()));
+        assertEquals(
+                2L,
+                countMessages(
+                        fixture.tenantId(),
+                        fixture.conversationId()
+                )
+        );
+
+        ConversationSnapshot conversation =
+                readConversationSnapshot(
+                        fixture.tenantId(),
+                        fixture.conversationId()
+                );
+
+        assertEquals("ACTIVE", conversation.status());
+        assertEquals(3L, conversation.nextMessageSequence());
+        assertEquals(0, conversation.version());
+
+        assertEquals(
+                1L,
+                countAudits(
+                        fixture.tenantId(),
+                        "TOOL_EXECUTION_STARTED"
+                )
+        );
+        assertEquals(
+                1L,
+                countAudits(
+                        fixture.tenantId(),
+                        "TOOL_EXECUTION_FAILED"
+                )
+        );
+        assertEquals(
+                0L,
+                countAudits(
+                        fixture.tenantId(),
+                        "TOOL_EXECUTION_SUCCEEDED"
+                )
+        );
+    }
+
+    @Test
+    void shouldRejectWhenRequestMessageStillCreating()
+            throws Exception {
+        Fixture fixture = insertFixture();
+        mockCurrentActor(fixture);
+
+        RegisteredExecution execution =
+                registerCreateTicket(
+                        fixture,
+                        "call-still-creating",
+                        validInput(),
+                        false
+                );
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> executeService.execute(
+                        context(fixture, execution)
+                )
+        );
+
+        ToolExecutionDatabaseRow executionRow =
+                readExecution(
+                        fixture.tenantId(),
+                        execution.toolExecutionId()
+                );
+
+        assertEquals("FAILED", executionRow.status());
+
+        assertEquals(0L, countTickets(fixture.tenantId()));
+        assertEquals(
+                2L,
+                countMessages(
+                        fixture.tenantId(),
+                        fixture.conversationId()
+                )
+        );
+
+        ConversationSnapshot conversation =
+                readConversationSnapshot(
+                        fixture.tenantId(),
+                        fixture.conversationId()
+                );
+
+        assertEquals("ACTIVE", conversation.status());
+        assertEquals(3L, conversation.nextMessageSequence());
+        assertEquals(0, conversation.version());
+
+        assertEquals(
+                1L,
+                countAudits(
+                        fixture.tenantId(),
+                        "TOOL_EXECUTION_STARTED"
+                )
+        );
+        assertEquals(
+                1L,
+                countAudits(
+                        fixture.tenantId(),
+                        "TOOL_EXECUTION_FAILED"
+                )
+        );
+    }
+
+    @Test
+    void shouldRejectWhenSequenceDoesNotFollowRequest()
+            throws Exception {
+        Fixture fixture = insertFixture();
+        mockCurrentActor(fixture);
+
+        RegisteredExecution execution =
+                registerCreateTicket(
+                        fixture,
+                        "call-bad-sequence",
+                        validInput(),
+                        false
+                );
+
+        completeFirstRound(
+                fixture,
+                execution,
+                validInput()
+        );
+
+        jdbcTemplate.update(
+                """
+                UPDATE conversations
+                SET next_message_sequence = 4
+                WHERE tenant_id = ?
+                  AND id = ?
+                """,
+                fixture.tenantId(),
+                fixture.conversationId()
+        );
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> executeService.execute(
+                        context(fixture, execution)
+                )
+        );
+
+        ToolExecutionDatabaseRow executionRow =
+                readExecution(
+                        fixture.tenantId(),
+                        execution.toolExecutionId()
+                );
+
+        assertEquals("FAILED", executionRow.status());
+
+        assertEquals(0L, countTickets(fixture.tenantId()));
+        assertEquals(
+                2L,
+                countMessages(
+                        fixture.tenantId(),
+                        fixture.conversationId()
+                )
+        );
+
+        ConversationSnapshot conversation =
+                readConversationSnapshot(
+                        fixture.tenantId(),
+                        fixture.conversationId()
+                );
+
+        assertEquals("ACTIVE", conversation.status());
+        assertEquals(4L, conversation.nextMessageSequence());
+        assertEquals(0, conversation.version());
+
+        assertEquals(
+                1L,
+                countAudits(
+                        fixture.tenantId(),
+                        "TOOL_EXECUTION_STARTED"
+                )
+        );
+        assertEquals(
+                1L,
+                countAudits(
+                        fixture.tenantId(),
+                        "TOOL_EXECUTION_FAILED"
+                )
+        );
+        assertEquals(
+                0L,
+                countAudits(
+                        fixture.tenantId(),
+                        "TOOL_EXECUTION_SUCCEEDED"
+                )
+        );
+    }
+
+    private void completeFirstRound(
+            Fixture fixture,
+            RegisteredExecution execution,
+            JsonNode arguments
+    ) {
+        Instant preparedAt = Instant.now()
+                .minusSeconds(5)
+                .truncatedTo(ChronoUnit.MILLIS);
+
+        ActiveAgentRuntime agent = new ActiveAgentRuntime(
+                fixture.agentId(),
+                fixture.tenantId(),
+                "agent-" + fixture.agentId(),
+                "system-prompt-sensitive-value",
+                AgentModelProvider.OPENAI,
+                "gpt-5-mini",
+                null
+        );
+
+        ChatModelRequest modelRequest = new ChatModelRequest(
+                "gpt-5-mini",
+                "system-prompt-sensitive-value",
+                ChatModelOptions.defaults(),
+                List.of(
+                        ChatModelMessage.user("Initial message")
+                ),
+                List.of()
+        );
+
+        PreparedConversationTurn prepared =
+                new PreparedConversationTurn(
+                        fixture.tenantId(),
+                        fixture.userId(),
+                        fixture.conversationId(),
+                        agent,
+                        fixture.userMessageId(),
+                        1L,
+                        fixture.assistantMessageId(),
+                        2L,
+                        1,
+                        preparedAt,
+                        modelRequest
+                );
+
+        toolCallCompleteService.complete(
+                prepared,
+                new ChatModelToolCall(
+                        execution.toolCallId(),
+                        "create_ticket",
+                        arguments
+                ),
+                new ChatTokenUsage(3, 2),
+                execution.toolExecutionId()
+        );
     }
 
     private RegisteredExecution registerCreateTicket(

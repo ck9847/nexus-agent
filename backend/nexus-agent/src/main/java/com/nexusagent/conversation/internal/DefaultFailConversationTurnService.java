@@ -51,12 +51,12 @@ public class DefaultFailConversationTurnService
     @Override
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void fail(
-            PreparedConversationTurn prepared,
+            AssistantMessageCompletionTarget target,
             ChatModelException failure
     ) {
         Objects.requireNonNull(
-                prepared,
-                "prepared must not be null"
+                target,
+                "target must not be null"
         );
         Objects.requireNonNull(
                 failure,
@@ -66,7 +66,7 @@ public class DefaultFailConversationTurnService
         Instant failedAt = clock.instant()
                 .truncatedTo(ChronoUnit.MILLIS);
 
-        if (failedAt.isBefore(prepared.preparedAt())) {
+        if (failedAt.isBefore(target.preparedAt())) {
             throw new IllegalStateException(
                     "Failure time must not be "
                             + "before preparation time"
@@ -82,7 +82,7 @@ public class DefaultFailConversationTurnService
 
         metadata.put(
                 "provider",
-                prepared.agent()
+                target.agent()
                         .modelProvider()
                         .name()
         );
@@ -110,11 +110,11 @@ public class DefaultFailConversationTurnService
                 );
 
         int rows = messageMapper.failAssistantMessage(
-                prepared.assistantMessageId(),
-                prepared.tenantId(),
-                prepared.conversationId(),
-                prepared.assistantSequenceNo(),
-                prepared.agent().modelName(),
+                target.assistantMessageId(),
+                target.tenantId(),
+                target.conversationId(),
+                target.assistantSequenceNo(),
+                target.agent().modelName(),
                 metadataJson
         );
 
@@ -130,17 +130,17 @@ public class DefaultFailConversationTurnService
 
         afterData.put(
                 "conversationId",
-                Long.toString(prepared.conversationId())
+                Long.toString(target.conversationId())
         );
         afterData.put(
                 "messageId",
                 Long.toString(
-                        prepared.assistantMessageId()
+                        target.assistantMessageId()
                 )
         );
         afterData.put(
                 "sequenceNo",
-                prepared.assistantSequenceNo()
+                target.assistantSequenceNo()
         );
         afterData.put(
                 "status",
@@ -148,13 +148,13 @@ public class DefaultFailConversationTurnService
         );
         afterData.put(
                 "modelProvider",
-                prepared.agent()
+                target.agent()
                         .modelProvider()
                         .name()
         );
         afterData.put(
                 "modelName",
-                prepared.agent().modelName()
+                target.agent().modelName()
         );
         afterData.put("errorCode", errorCode);
         afterData.put(
@@ -175,12 +175,12 @@ public class DefaultFailConversationTurnService
         );
 
         auditLogWriter.write(new AuditLogCommand(
-                prepared.tenantId(),
+                target.tenantId(),
                 AuditActorType.AGENT,
-                prepared.agent().agentId(),
+                target.agent().agentId(),
                 "CONVERSATION_TURN_FAILED",
                 "MESSAGE",
-                prepared.assistantMessageId(),
+                target.assistantMessageId(),
                 null,
                 AuditResult.FAILURE,
                 null,
