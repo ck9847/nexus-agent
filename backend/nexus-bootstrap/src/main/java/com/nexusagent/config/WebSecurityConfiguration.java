@@ -32,6 +32,7 @@ public class WebSecurityConfiguration {
                         ).permitAll()
                         .requestMatchers(
                                 "/actuator/health",
+                                "/actuator/health/**",
                                 "/actuator/info"
                         ).permitAll()
                         .requestMatchers(

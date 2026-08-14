@@ -1,43 +1,99 @@
 name: nexus-agent
 
 services:
-   mysql:
-      image: mysql:8.4
-      container_name: nexus-agent-mysql
-      restart: unless-stopped
+  mysql:
+    image: mysql:8.4
+    container_name: nexus-agent-mysql
+    restart: unless-stopped
 
-      environment:
-         MYSQL_DATABASE: ${MYSQL_DATABASE}
-         MYSQL_USER: ${MYSQL_USER}
-         MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-         MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-         TZ: UTC
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      TZ: UTC
 
-      command:
-        - --character-set-server=utf8mb4
-        - --collation-server=utf8mb4_0900_ai_ci
-        - --default-time-zone=+00:00
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+00:00
 
-      ports:
-         - "${MYSQL_PORT:-3307}:3306"
+    ports:
+      - "${MYSQL_PORT:-3307}:3306"
 
-      volumes:
-         - mysql-data:/var/lib/mysql
+    volumes:
+      - mysql-data:/var/lib/mysql
 
-      healthcheck:
-         test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
-         interval: 5s
-         timeout: 3s
-         retries: 20
-         start_period: 30s
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
 
-      networks:
-         - nexus-network
+    networks:
+      - nexus-network
+
+  app:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: nexus-agent-app
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+    environment:
+      # MySQL 连接：容器内通过服务名访问。
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+
+      # JWT（密钥通过环境变量注入，绝不写入本文件）。
+      NEXUS_JWT_ISSUER: ${NEXUS_JWT_ISSUER:-https://auth.nexus-agent.local}
+      NEXUS_JWT_SECRET: ${NEXUS_JWT_SECRET:?NEXUS_JWT_SECRET is required}
+      NEXUS_JWT_ACCESS_TOKEN_TTL: ${NEXUS_JWT_ACCESS_TOKEN_TTL:-15m}
+
+      # OpenAI 模型网关（密钥通过环境变量注入，绝不写入本文件）。
+      NEXUS_OPENAI_ENABLED: ${NEXUS_OPENAI_ENABLED:-false}
+      NEXUS_OPENAI_BASE_URL: ${NEXUS_OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      NEXUS_OPENAI_CONNECT_TIMEOUT: ${NEXUS_OPENAI_CONNECT_TIMEOUT:-10s}
+      NEXUS_OPENAI_READ_TIMEOUT: ${NEXUS_OPENAI_READ_TIMEOUT:-2m}
+      NEXUS_OPENAI_MAX_ERROR_BODY_BYTES: ${NEXUS_OPENAI_MAX_ERROR_BODY_BYTES:-8192}
+
+      # 会话流式线程池与超时。
+      NEXUS_CONVERSATION_STREAM_TIMEOUT: ${NEXUS_CONVERSATION_STREAM_TIMEOUT:-2m}
+      NEXUS_CONVERSATION_STREAM_CORE_POOL_SIZE: ${NEXUS_CONVERSATION_STREAM_CORE_POOL_SIZE:-4}
+      NEXUS_CONVERSATION_STREAM_MAX_POOL_SIZE: ${NEXUS_CONVERSATION_STREAM_MAX_POOL_SIZE:-16}
+      NEXUS_CONVERSATION_STREAM_QUEUE_CAPACITY: ${NEXUS_CONVERSATION_STREAM_QUEUE_CAPACITY:-100}
+
+      # 可选：ID 节点与密码哈希强度。
+      NEXUS_ID_NODE_ID: ${NEXUS_ID_NODE_ID:-0}
+      NEXUS_BCRYPT_STRENGTH: ${NEXUS_BCRYPT_STRENGTH:-12}
+
+    ports:
+      - "${SERVER_PORT:-8080}:8080"
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health/readiness || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+    networks:
+      - nexus-network
 
 volumes:
-   mysql-data:
-     name: nexus-agent-mysql-data
+  mysql-data:
+    name: nexus-agent-mysql-data
 
 networks:
-   nexus-network:
-     name: nexus-agent-network
+  nexus-network:
+    name: nexus-agent-network

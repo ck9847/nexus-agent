@@ -40,3 +40,7 @@ jobs:
 
       - name: Run unit and integration tests
         run: ./mvnw --batch-mode --no-transfer-progress verify
+
+      - name: Build application container
+        working-directory: ${{ github.workspace }}
+        run: docker build --file backend/Dockerfile --tag nexus-agent:test backend
