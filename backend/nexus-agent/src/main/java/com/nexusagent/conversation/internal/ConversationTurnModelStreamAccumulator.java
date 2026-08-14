@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.nexusagent.conversation.api.ConversationTurnStreamEvent;
+import com.nexusagent.conversation.api.ConversationTurnStreamHandler;
 import com.nexusagent.model.api.ChatModelErrorCategory;
 import com.nexusagent.model.api.ChatModelException;
 import com.nexusagent.model.api.ChatModelFinishReason;
@@ -27,6 +29,7 @@ final class ConversationTurnModelStreamAccumulator
             "Chat model stream is malformed";
 
     private final ObjectMapper objectMapper;
+    private final ConversationTurnStreamHandler downstream;
 
     private final StringBuilder text = new StringBuilder();
     private final StringBuilder callId = new StringBuilder();
@@ -38,7 +41,8 @@ final class ConversationTurnModelStreamAccumulator
     private ChatModelStreamEvent.Completed completed;
 
     ConversationTurnModelStreamAccumulator(
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            ConversationTurnStreamHandler downstream
     ) {
         this.objectMapper =
                 Objects.requireNonNull(
@@ -49,6 +53,11 @@ final class ConversationTurnModelStreamAccumulator
         this.objectMapper.enable(
                 DeserializationFeature
                         .FAIL_ON_TRAILING_TOKENS
+        );
+
+        this.downstream = Objects.requireNonNull(
+                downstream,
+                "downstream must not be null"
         );
     }
 
@@ -82,13 +91,27 @@ final class ConversationTurnModelStreamAccumulator
             throw malformed();
         }
 
-        text.append(delta.text());
-
-        if (text.length() > MAX_TEXT_LENGTH) {
+        if ((long) text.length() + delta.text().length()
+                > MAX_TEXT_LENGTH) {
             throw malformed();
         }
 
+        text.append(delta.text());
         textSeen = true;
+
+        forward(delta.text());
+    }
+
+    private void forward(String text) {
+        try {
+            downstream.onEvent(
+                    new ConversationTurnStreamEvent.TextDelta(text)
+            );
+        } catch (RuntimeException cause) {
+            throw new ConversationTurnStreamConsumerException(
+                    cause
+            );
+        }
     }
 
     private void onToolCallDelta(

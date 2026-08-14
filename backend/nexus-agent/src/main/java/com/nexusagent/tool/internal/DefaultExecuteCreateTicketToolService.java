@@ -10,7 +10,8 @@ import java.time.temporal.ChronoUnit;
 import java.util.Objects;
 
 @Service
-public class DefaultExecuteCreateTicketToolService {
+public class DefaultExecuteCreateTicketToolService
+        implements CreateTicketToolExecutionService {
 
     private static final String INVALID_TOOL_INPUT =
             "INVALID_TOOL_INPUT";
@@ -39,6 +40,7 @@ public class DefaultExecuteCreateTicketToolService {
         this.clock = Objects.requireNonNull(clock);
     }
 
+    @Override
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public ExecuteCreateTicketToolResult execute(
             AgentToolExecutionContext context
@@ -53,7 +55,7 @@ public class DefaultExecuteCreateTicketToolService {
         try {
             claim = transactions.claim(context);
         } catch (IllegalArgumentException inputFailure) {
-            finalizeFailure(context, inputFailure);
+            failPending(context, inputFailure);
 
             throw inputFailure;
         }
@@ -65,26 +67,35 @@ public class DefaultExecuteCreateTicketToolService {
         try {
             return transactions.succeed(claim);
         } catch (RuntimeException executionFailure) {
-            finalizeFailure(context, executionFailure);
+            failPending(context, executionFailure);
 
             throw executionFailure;
         }
     }
 
-    private void finalizeFailure(
+    @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public void failPending(
             AgentToolExecutionContext context,
-            RuntimeException executionFailure
+            RuntimeException failure
     ) {
-        CreateTicketToolFailure failure =
-                classify(executionFailure);
+        Objects.requireNonNull(
+                context,
+                "context must not be null"
+        );
+        Objects.requireNonNull(
+                failure,
+                "failure must not be null"
+        );
+
+        CreateTicketToolFailure classified =
+                classify(failure);
 
         try {
-            transactions.fail(context, failure);
+            transactions.fail(context, classified);
         } catch (RuntimeException finalizationFailure) {
-            if (finalizationFailure != executionFailure) {
-                finalizationFailure.addSuppressed(
-                        executionFailure
-                );
+            if (finalizationFailure != failure) {
+                finalizationFailure.addSuppressed(failure);
             }
 
             throw finalizationFailure;
