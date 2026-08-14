@@ -1,0 +1,172 @@
+@baseUrl = http://localhost:8080
+@tenantCode = nexus-demo-001
+@tenantName = Nexus Demo
+@adminUsername = demo-admin
+@adminEmail = demo-admin@example.com
+@adminPassword = ChangeMe-Demo-Only-2026!
+@agentCode = support-agent
+@modelName = replace-with-enabled-model
+
+### 0. Readiness（无需 JWT）
+GET {{baseUrl}}/actuator/health/readiness
+Accept: application/json
+
+### 1. 初始化租户与首个 ADMIN
+# tenantCode 必须唯一；重复执行前请修改顶部 tenantCode/adminEmail。
+POST {{baseUrl}}/api/v1/tenants/bootstrap
+Content-Type: application/json
+Accept: application/json
+
+{
+  "tenantCode": "{{tenantCode}}",
+  "tenantName": "{{tenantName}}",
+  "adminUsername": "{{adminUsername}}",
+  "adminEmail": "{{adminEmail}}",
+  "adminPassword": "{{adminPassword}}"
+}
+
+> {%
+    client.test("tenant bootstrap returns IDs", function () {
+        client.assert(response.status === 201, "expected HTTP 201");
+        client.assert(response.body.tenantId, "tenantId is required");
+        client.assert(response.body.adminUserId, "adminUserId is required");
+    });
+    client.global.set("tenantId", response.body.tenantId);
+    client.global.set("adminUserId", response.body.adminUserId);
+%}
+
+### 2. 登录并保存 JWT
+POST {{baseUrl}}/api/v1/auth/login
+Content-Type: application/json
+Accept: application/json
+
+{
+  "tenantCode": "{{tenantCode}}",
+  "username": "{{adminUsername}}",
+  "password": "{{adminPassword}}"
+}
+
+> {%
+    client.test("login returns a bearer token", function () {
+        client.assert(response.status === 200, "expected HTTP 200");
+        client.assert(response.body.tokenType === "Bearer", "expected Bearer token");
+        client.assert(response.body.accessToken, "accessToken is required");
+    });
+    client.global.set("accessToken", response.body.accessToken);
+%}
+
+### 3. 创建 DRAFT Agent（需要 ADMIN）
+# modelName 必须替换为 NEXUS_OPENAI_BASE_URL 实际支持的模型。
+POST {{baseUrl}}/api/v1/agents
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+Accept: application/json
+
+{
+  "code": "{{agentCode}}",
+  "name": "Enterprise Support Agent",
+  "description": "Creates auditable support tickets from user incidents.",
+  "systemPrompt": "You are an enterprise support agent. When a user reports an incident and asks for a ticket, you MUST call create_ticket exactly once with the supplied facts. Never invent a ticket number. After the tool succeeds, answer with the returned ticket number.",
+  "modelProvider": "OPENAI",
+  "modelName": "{{modelName}}",
+  "modelConfig": {
+    "temperature": 0.2,
+    "maxOutputTokens": 1024
+  }
+}
+
+> {%
+    client.test("agent starts in DRAFT", function () {
+        client.assert(response.status === 201, "expected HTTP 201");
+        client.assert(response.body.status === "DRAFT", "expected DRAFT");
+        client.assert(response.body.version === 0, "expected version 0");
+    });
+    client.global.set("agentId", response.body.agentId);
+%}
+
+### 4. 查询 Agent 管理详情
+GET {{baseUrl}}/api/v1/agents/{{agentCode}}
+Authorization: Bearer {{accessToken}}
+Accept: application/json
+
+### 5. 激活 Agent（DRAFT v0 → ACTIVE v1）
+PATCH {{baseUrl}}/api/v1/agents/{{agentCode}}/status
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+Accept: application/json
+
+{
+  "targetStatus": "ACTIVE",
+  "expectedVersion": 0
+}
+
+### 6. 创建 Conversation 和初始 USER 消息
+POST {{baseUrl}}/api/v1/conversations
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+Accept: application/json
+
+{
+  "agentCode": "{{agentCode}}",
+  "title": "Production connectivity incident",
+  "initialMessage": "I need help with a production connectivity incident."
+}
+
+> {%
+    client.test("conversation is active", function () {
+        client.assert(response.status === 201, "expected HTTP 201");
+        client.assert(response.body.status === "ACTIVE", "expected ACTIVE");
+        client.assert(response.body.initialMessage.sequenceNo === 1, "expected sequence 1");
+    });
+    client.global.set("conversationId", response.body.conversationId);
+%}
+
+### 7. 执行 SSE Agent turn
+# 需要 .env 中 NEXUS_OPENAI_ENABLED=true、有效 OPENAI_API_KEY 和可用 modelName。
+# 期望事件顺序通常为 started → delta* → completed；失败时最后为安全 error。
+POST {{baseUrl}}/api/v1/conversations/{{conversationId}}/turns:stream
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+Accept: text/event-stream
+
+{
+  "content": "服务器无法连接，请创建一个高优先级工单。标题使用 Production server unreachable，并在描述中保留 connectivity timeout。"
+}
+
+### 8. 查询 Conversation 详情
+GET {{baseUrl}}/api/v1/conversations/{{conversationId}}
+Authorization: Bearer {{accessToken}}
+Accept: application/json
+
+### 9. 查询消息历史第一页
+GET {{baseUrl}}/api/v1/conversations/{{conversationId}}/messages?limit=20
+Authorization: Bearer {{accessToken}}
+Accept: application/json
+
+### 10. 查询 Agent 创建的 HIGH 工单
+GET {{baseUrl}}/api/v1/tickets?priority=HIGH&limit=20
+Authorization: Bearer {{accessToken}}
+Accept: application/json
+
+> {%
+    if (response.body.items && response.body.items.length > 0) {
+        client.global.set("ticketNo", response.body.items[0].ticketNo);
+    }
+%}
+
+### 11. 查询刚生成的工单详情
+# 先执行第 10 步；如果列表为空，说明模型没有调用 create_ticket。
+GET {{baseUrl}}/api/v1/tickets/{{ticketNo}}
+Authorization: Bearer {{accessToken}}
+Accept: application/json
+
+### 12. 演示 Ticket 乐观锁状态流转（OPEN v0 → IN_PROGRESS v1）
+PATCH {{baseUrl}}/api/v1/tickets/{{ticketNo}}/status
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+Accept: application/json
+
+{
+  "targetStatus": "IN_PROGRESS",
+  "expectedVersion": 0
+}
