@@ -161,4 +161,30 @@ public interface ConversationMapper {
             @Param("expectedVersion") int expectedVersion,
             @Param("lastMessageAt") java.time.Instant lastMessageAt
     );
+
+    @Update("""
+        UPDATE conversations
+        SET next_message_sequence =
+                    next_message_sequence + 2,
+            last_message_at = #{lastMessageAt},
+            version = version + 1,
+            updated_at = #{lastMessageAt}
+        WHERE id = #{conversationId}
+          AND tenant_id = #{tenantId}
+          AND user_id = #{userId}
+          AND status = 'ACTIVE'
+          AND next_message_sequence =
+                    #{expectedNextMessageSequence}
+          AND version = #{expectedVersion}
+        """)
+    int advanceForToolContinuation(
+            @Param("conversationId") long conversationId,
+            @Param("tenantId") long tenantId,
+            @Param("userId") long userId,
+            @Param("expectedNextMessageSequence")
+            long expectedNextMessageSequence,
+            @Param("expectedVersion") int expectedVersion,
+            @Param("lastMessageAt")
+            java.time.Instant lastMessageAt
+    );
 }

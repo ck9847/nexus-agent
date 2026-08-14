@@ -5,7 +5,7 @@ import com.nexusagent.model.api.ChatModelException;
 public interface FailConversationTurnService {
 
     void fail(
-            PreparedConversationTurn prepared,
+            AssistantMessageCompletionTarget target,
             ChatModelException failure
     );
 }

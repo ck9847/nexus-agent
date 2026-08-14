@@ -49,14 +49,14 @@ public class DefaultCompleteConversationTurnService
     @Override
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public CompletedConversationTurn complete(
-            PreparedConversationTurn prepared,
+            AssistantMessageCompletionTarget target,
             String assistantContent,
             ChatModelFinishReason finishReason,
             ChatTokenUsage usage
     ) {
         Objects.requireNonNull(
-                prepared,
-                "prepared must not be null"
+                target,
+                "target must not be null"
         );
 
         String content =
@@ -75,7 +75,7 @@ public class DefaultCompleteConversationTurnService
         Instant completedAt = clock.instant()
                 .truncatedTo(ChronoUnit.MILLIS);
 
-        if (completedAt.isBefore(prepared.preparedAt())) {
+        if (completedAt.isBefore(target.preparedAt())) {
             throw new IllegalStateException(
                     "Completion time must not be "
                             + "before preparation time"
@@ -87,7 +87,7 @@ public class DefaultCompleteConversationTurnService
 
         metadata.put(
                 "provider",
-                prepared.agent()
+                target.agent()
                         .modelProvider()
                         .name()
         );
@@ -106,12 +106,12 @@ public class DefaultCompleteConversationTurnService
                 );
 
         int rows = messageMapper.completeAssistantMessage(
-                prepared.assistantMessageId(),
-                prepared.tenantId(),
-                prepared.conversationId(),
-                prepared.assistantSequenceNo(),
+                target.assistantMessageId(),
+                target.tenantId(),
+                target.conversationId(),
+                target.assistantSequenceNo(),
                 content,
-                prepared.agent().modelName(),
+                target.agent().modelName(),
                 usage.promptTokens(),
                 usage.completionTokens(),
                 metadataJson
@@ -129,17 +129,17 @@ public class DefaultCompleteConversationTurnService
 
         afterData.put(
                 "conversationId",
-                Long.toString(prepared.conversationId())
+                Long.toString(target.conversationId())
         );
         afterData.put(
                 "messageId",
                 Long.toString(
-                        prepared.assistantMessageId()
+                        target.assistantMessageId()
                 )
         );
         afterData.put(
                 "sequenceNo",
-                prepared.assistantSequenceNo()
+                target.assistantSequenceNo()
         );
         afterData.put(
                 "status",
@@ -147,13 +147,13 @@ public class DefaultCompleteConversationTurnService
         );
         afterData.put(
                 "modelProvider",
-                prepared.agent()
+                target.agent()
                         .modelProvider()
                         .name()
         );
         afterData.put(
                 "modelName",
-                prepared.agent().modelName()
+                target.agent().modelName()
         );
         afterData.put(
                 "finishReason",
@@ -173,12 +173,12 @@ public class DefaultCompleteConversationTurnService
         );
 
         auditLogWriter.write(new AuditLogCommand(
-                prepared.tenantId(),
+                target.tenantId(),
                 AuditActorType.AGENT,
-                prepared.agent().agentId(),
+                target.agent().agentId(),
                 "CONVERSATION_TURN_COMPLETED",
                 "MESSAGE",
-                prepared.assistantMessageId(),
+                target.assistantMessageId(),
                 null,
                 AuditResult.SUCCESS,
                 null,
@@ -194,17 +194,17 @@ public class DefaultCompleteConversationTurnService
         ));
 
         return new CompletedConversationTurn(
-                prepared.tenantId(),
-                prepared.userId(),
-                prepared.conversationId(),
-                prepared.agent().agentId(),
-                prepared.assistantMessageId(),
-                prepared.assistantSequenceNo(),
+                target.tenantId(),
+                target.userId(),
+                target.conversationId(),
+                target.agent().agentId(),
+                target.assistantMessageId(),
+                target.assistantSequenceNo(),
                 content,
-                prepared.agent().modelName(),
+                target.agent().modelName(),
                 finishReason,
                 usage,
-                prepared.preparedAt(),
+                target.preparedAt(),
                 completedAt
         );
     }

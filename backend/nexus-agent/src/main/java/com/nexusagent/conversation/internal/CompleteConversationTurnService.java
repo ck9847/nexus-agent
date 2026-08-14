@@ -6,7 +6,7 @@ import com.nexusagent.model.api.ChatTokenUsage;
 public interface CompleteConversationTurnService {
 
     CompletedConversationTurn complete(
-            PreparedConversationTurn prepared,
+            AssistantMessageCompletionTarget target,
             String assistantContent,
             ChatModelFinishReason finishReason,
             ChatTokenUsage usage

@@ -128,7 +128,11 @@ public class CreateTicketToolExecutionTransactions {
                     throw new ToolExecutionApprovalRequiredException();
 
             case SUCCEEDED ->
-                    replaySucceeded(context, execution);
+                    replaySucceeded(
+                            context,
+                            conversation,
+                            execution
+                    );
 
             case FAILED, CANCELLED ->
                     throw new ToolExecutionTerminalStateException();
@@ -162,6 +166,30 @@ public class CreateTicketToolExecutionTransactions {
             );
         }
 
+        ToolCallRequestMessageRow requestMessage =
+                Objects.requireNonNull(
+                        messageMapper
+                                .findCompletedToolCallRequestForUpdate(
+                                        context
+                                                .requestMessageId(),
+                                        context.tenantId(),
+                                        context
+                                                .conversationId()
+                                ),
+                        "messageMapper must not return null"
+                ).orElseThrow(() -> new IllegalStateException(
+                        "Completed tool call request "
+                                + "message is missing"
+                ));
+
+        if (conversation.nextMessageSequence()
+                != requestMessage.sequenceNo() + 1) {
+            throw new IllegalStateException(
+                    "Conversation sequence must immediately "
+                            + "follow the tool call request"
+            );
+        }
+
         Instant completedAt = clock.instant()
                 .truncatedTo(ChronoUnit.MILLIS);
 
@@ -169,6 +197,19 @@ public class CreateTicketToolExecutionTransactions {
             throw new IllegalStateException(
                     "Completion time must not be "
                             + "before claim time"
+            );
+        }
+
+        if (conversation.nextMessageSequence()
+                > Long.MAX_VALUE - 2) {
+            throw new IllegalStateException(
+                    "Conversation message sequence is exhausted"
+            );
+        }
+
+        if (conversation.version() == Integer.MAX_VALUE) {
+            throw new IllegalStateException(
+                    "Conversation version is exhausted"
             );
         }
 
@@ -197,12 +238,24 @@ public class CreateTicketToolExecutionTransactions {
             );
         }
 
-        long toolMessageId = idGenerator.nextId();
+        long toolSequence = conversation.nextMessageSequence();
+        long finalAssistantSequence = toolSequence + 1;
+        int newConversationVersion =
+                conversation.version() + 1;
 
-        if (toolMessageId <= 0) {
+        long toolMessageId = idGenerator.nextId();
+        long finalAssistantMessageId = idGenerator.nextId();
+
+        if (toolMessageId <= 0
+                || finalAssistantMessageId <= 0) {
             throw new IllegalStateException(
-                    "Generated TOOL message ID "
-                            + "must be positive"
+                    "Generated message IDs must be positive"
+            );
+        }
+
+        if (toolMessageId == finalAssistantMessageId) {
+            throw new IllegalStateException(
+                    "Generated message IDs must be distinct"
             );
         }
 
@@ -216,7 +269,7 @@ public class CreateTicketToolExecutionTransactions {
         String outputJson =
                 ticketToolJsonCodec.encodeOutput(output);
 
-        String metadataJson = metadataCodec.encode(
+        String toolMetadataJson = metadataCodec.encode(
                 Map.of(
                         "toolExecutionId",
                         Long.toString(
@@ -233,7 +286,7 @@ public class CreateTicketToolExecutionTransactions {
                 toolMessageId,
                 context.tenantId(),
                 context.conversationId(),
-                conversation.nextMessageSequence(),
+                toolSequence,
                 MessageRole.TOOL,
                 outputJson,
                 MessageContentType.JSON,
@@ -241,14 +294,55 @@ public class CreateTicketToolExecutionTransactions {
                 null,
                 null,
                 null,
-                metadataJson,
+                toolMetadataJson,
                 completedAt
         );
+
+        String continuationMetadataJson = metadataCodec.encode(
+                Map.of(
+                        "messageKind", "TOOL_CONTINUATION",
+                        "toolExecutionId",
+                        Long.toString(
+                                context.toolExecutionId()
+                        ),
+                        "toolCallId",
+                        context.toolCallId(),
+                        "resultMessageId",
+                        Long.toString(toolMessageId),
+                        "conversationVersion",
+                        newConversationVersion
+                )
+        );
+
+        MessageRow finalAssistantPlaceholder =
+                new MessageRow(
+                        finalAssistantMessageId,
+                        context.tenantId(),
+                        context.conversationId(),
+                        finalAssistantSequence,
+                        MessageRole.ASSISTANT,
+                        "",
+                        MessageContentType.TEXT,
+                        MessageStatus.CREATING,
+                        requestMessage.modelName(),
+                        null,
+                        null,
+                        continuationMetadataJson,
+                        completedAt
+                );
 
         requireOneRow(
                 messageMapper.insert(toolMessage),
                 "Expected one TOOL message "
                         + "to be inserted"
+        );
+
+        requireOneRow(
+                messageMapper.insert(
+                        finalAssistantPlaceholder
+                ),
+                "Expected one continuation "
+                        + "assistant message to be inserted"
         );
 
         long durationMs = Duration.between(
@@ -257,7 +351,7 @@ public class CreateTicketToolExecutionTransactions {
         ).toMillis();
 
         requireOneRow(
-                conversationMapper.advanceMessageSequence(
+                conversationMapper.advanceForToolContinuation(
                         context.conversationId(),
                         context.tenantId(),
                         context.requesterUserId(),
@@ -308,11 +402,52 @@ public class CreateTicketToolExecutionTransactions {
                                 context.conversationId()
                         ),
                         "sequenceNo",
-                        conversation.nextMessageSequence(),
+                        toolSequence,
                         "toolExecutionId",
                         Long.toString(
                                 context.toolExecutionId()
                         )
+                ),
+                null,
+                null
+        ));
+
+        auditLogWriter.write(new AuditLogCommand(
+                context.tenantId(),
+                AuditActorType.AGENT,
+                context.agentId(),
+                "CONVERSATION_TOOL_CONTINUATION_PREPARED",
+                "MESSAGE",
+                finalAssistantMessageId,
+                context.toolExecutionId(),
+                AuditResult.SUCCESS,
+                null,
+                null,
+                null,
+                null,
+                Map.of(
+                        "conversationId",
+                        Long.toString(
+                                context.conversationId()
+                        ),
+                        "messageId",
+                        Long.toString(
+                                finalAssistantMessageId
+                        ),
+                        "sequenceNo",
+                        finalAssistantSequence,
+                        "status",
+                        MessageStatus.CREATING.name(),
+                        "toolExecutionId",
+                        Long.toString(
+                                context.toolExecutionId()
+                        ),
+                        "resultMessageId",
+                        Long.toString(toolMessageId),
+                        "conversationVersion",
+                        newConversationVersion,
+                        "preparedAt",
+                        completedAt.toString()
                 ),
                 null,
                 null
@@ -352,6 +487,11 @@ public class CreateTicketToolExecutionTransactions {
                 ticket.ticketNo(),
                 ticket.status(),
                 toolMessageId,
+                toolSequence,
+                finalAssistantMessageId,
+                finalAssistantSequence,
+                newConversationVersion,
+                completedAt,
                 false
         );
     }
@@ -507,6 +647,7 @@ public class CreateTicketToolExecutionTransactions {
 
     private ClaimedCreateTicketToolExecution replaySucceeded(
             AgentToolExecutionContext context,
+            ConversationTurnStateRow conversation,
             ToolExecutionRow execution
     ) {
         CreateTicketToolOutput output =
@@ -524,6 +665,46 @@ public class CreateTicketToolExecutionTransactions {
             );
         }
 
+        ToolCallRequestMessageRow toolMessage =
+                Objects.requireNonNull(
+                        messageMapper
+                                .findOwnedMessageByIdForUpdate(
+                                        resultMessageId,
+                                        context.tenantId(),
+                                        context
+                                                .conversationId()
+                                ),
+                        "messageMapper must not return null"
+                ).orElseThrow(() -> new IllegalStateException(
+                        "Succeeded tool result message "
+                                + "is missing"
+                ));
+
+        ToolCallRequestMessageRow assistantMessage =
+                Objects.requireNonNull(
+                        messageMapper
+                                .findOwnedMessageBySequenceForUpdate(
+                                        context.tenantId(),
+                                        context
+                                                .conversationId(),
+                                        toolMessage.sequenceNo() + 1
+                                ),
+                        "messageMapper must not return null"
+                ).orElseThrow(() -> new IllegalStateException(
+                        "Tool continuation assistant "
+                                + "message is missing"
+                ));
+
+        requireReplayToolMessage(
+                execution,
+                toolMessage
+        );
+
+        requireReplayAssistantMessage(
+                toolMessage,
+                assistantMessage
+        );
+
         return ClaimedCreateTicketToolExecution.replay(
                 context,
                 execution.startedAt(),
@@ -533,9 +714,125 @@ public class CreateTicketToolExecutionTransactions {
                         output.ticketNo(),
                         output.status(),
                         resultMessageId,
+                        toolMessage.sequenceNo(),
+                        assistantMessage.id(),
+                        assistantMessage.sequenceNo(),
+                        conversation.version(),
+                        assistantMessage.createdAt(),
                         true
                 )
         );
+    }
+
+    private static void requireReplayToolMessage(
+            ToolExecutionRow execution,
+            ToolCallRequestMessageRow toolMessage
+    ) {
+        if (toolMessage.id() != execution.resultMessageId()) {
+            throw new IllegalStateException(
+                    "Tool result message id must match "
+                            + "the succeeded execution"
+            );
+        }
+
+        if (toolMessage.role() != MessageRole.TOOL) {
+            throw new IllegalStateException(
+                    "Tool result message must be a "
+                            + "TOOL message"
+            );
+        }
+
+        if (toolMessage.status() != MessageStatus.COMPLETED) {
+            throw new IllegalStateException(
+                    "Tool result message must be completed"
+            );
+        }
+
+        if (toolMessage.contentType()
+                != MessageContentType.JSON) {
+            throw new IllegalStateException(
+                    "Tool result message must carry "
+                            + "JSON content"
+            );
+        }
+
+        if (toolMessage.content() == null
+                || toolMessage.content().isBlank()) {
+            throw new IllegalStateException(
+                    "Tool result message content "
+                            + "must not be empty"
+            );
+        }
+
+        if (toolMessage.sequenceNo() <= 0) {
+            throw new IllegalStateException(
+                    "Tool result message sequence "
+                            + "must be positive"
+            );
+        }
+    }
+
+    private static void requireReplayAssistantMessage(
+            ToolCallRequestMessageRow toolMessage,
+            ToolCallRequestMessageRow assistantMessage
+    ) {
+        if (assistantMessage.id() <= 0) {
+            throw new IllegalStateException(
+                    "Continuation assistant message id "
+                            + "must be positive"
+            );
+        }
+
+        if (assistantMessage.id() == toolMessage.id()) {
+            throw new IllegalStateException(
+                    "Continuation assistant message must "
+                            + "not be the tool result message"
+            );
+        }
+
+        if (assistantMessage.role() != MessageRole.ASSISTANT) {
+            throw new IllegalStateException(
+                    "Continuation message must be an "
+                            + "ASSISTANT message"
+            );
+        }
+
+        if (assistantMessage.contentType()
+                != MessageContentType.TEXT) {
+            throw new IllegalStateException(
+                    "Continuation message must carry "
+                            + "TEXT content"
+            );
+        }
+
+        if (assistantMessage.sequenceNo()
+                != toolMessage.sequenceNo() + 1) {
+            throw new IllegalStateException(
+                    "Continuation message sequence must "
+                            + "immediately follow the tool "
+                            + "result message"
+            );
+        }
+
+        if (assistantMessage.modelName() == null
+                || assistantMessage.modelName().isBlank()) {
+            throw new IllegalStateException(
+                    "Continuation message model name "
+                            + "must not be empty"
+            );
+        }
+
+        if (assistantMessage.status()
+                != MessageStatus.CREATING
+                && assistantMessage.status()
+                != MessageStatus.COMPLETED
+                && assistantMessage.status()
+                != MessageStatus.FAILED) {
+            throw new IllegalStateException(
+                    "Continuation message status must be "
+                            + "CREATING, COMPLETED or FAILED"
+            );
+        }
     }
 
     private ConversationTurnStateRow lockConversation(
