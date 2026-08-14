@@ -3,6 +3,7 @@ package com.nexusagent.conversation.internal;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.nexusagent.conversation.api.ConversationTurnStreamEvent;
 import com.nexusagent.model.api.ChatModelErrorCategory;
 import com.nexusagent.model.api.ChatModelException;
 import com.nexusagent.model.api.ChatModelFinishReason;
@@ -11,9 +12,15 @@ import com.nexusagent.model.api.ChatTokenUsage;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ConversationTurnModelStreamAccumulatorTest {
 
@@ -32,12 +39,18 @@ class ConversationTurnModelStreamAccumulatorTest {
                     USAGE
             );
 
+    private final List<ConversationTurnStreamEvent> forwarded =
+            new ArrayList<>();
+
     private ConversationTurnModelStreamAccumulator accumulator;
 
     @BeforeEach
     void setUp() {
+        forwarded.clear();
+
         accumulator = new ConversationTurnModelStreamAccumulator(
-                new ObjectMapper()
+                new ObjectMapper(),
+                forwarded::add
         );
     }
 
@@ -329,6 +342,107 @@ class ConversationTurnModelStreamAccumulatorTest {
 
         assertMalformed(() ->
                 accumulator.requireCompletion()
+        );
+    }
+
+    @Test
+    void shouldForwardTextDeltasVerbatim() {
+        accumulator.onEvent(new ChatModelStreamEvent.TextDelta("Hello"));
+        accumulator.onEvent(new ChatModelStreamEvent.TextDelta(" "));
+        accumulator.onEvent(new ChatModelStreamEvent.TextDelta("world"));
+
+        assertEquals(
+                List.of(
+                        new ConversationTurnStreamEvent.TextDelta(
+                                "Hello"
+                        ),
+                        new ConversationTurnStreamEvent.TextDelta(
+                                " "
+                        ),
+                        new ConversationTurnStreamEvent.TextDelta(
+                                "world"
+                        )
+                ),
+                forwarded
+        );
+    }
+
+    @Test
+    void shouldNotForwardToolCallDeltas() {
+        accumulator.onEvent(new ChatModelStreamEvent.ToolCallDelta(
+                0, "call-1", "create_ticket", "{\"title\":\"x\"}"
+        ));
+        accumulator.onEvent(TOOL_CALLS);
+
+        accumulator.requireCompletion();
+
+        assertTrue(forwarded.isEmpty());
+    }
+
+    @Test
+    void shouldNotForwardModelCompleted() {
+        accumulator.onEvent(new ChatModelStreamEvent.TextDelta("Hi"));
+        accumulator.onEvent(STOP);
+
+        assertEquals(1, forwarded.size());
+        assertInstanceOf(
+                ConversationTurnStreamEvent.TextDelta.class,
+                forwarded.get(0)
+        );
+
+        assertFalse(
+                forwarded.stream().anyMatch(
+                        event -> event
+                                instanceof ConversationTurnStreamEvent
+                                .Completed
+                )
+        );
+    }
+
+    @Test
+    void shouldWrapDownstreamFailure() {
+        IllegalStateException downstreamFailure =
+                new IllegalStateException("sse boom");
+
+        ConversationTurnModelStreamAccumulator failing =
+                new ConversationTurnModelStreamAccumulator(
+                        new ObjectMapper(),
+                        event -> {
+                            throw downstreamFailure;
+                        }
+                );
+
+        ConversationTurnStreamConsumerException thrown =
+                assertThrows(
+                        ConversationTurnStreamConsumerException.class,
+                        () -> failing.onEvent(
+                                new ChatModelStreamEvent.TextDelta("Hi")
+                        )
+                );
+
+        assertSame(downstreamFailure, thrown.getCause());
+    }
+
+    @Test
+    void shouldRejectNullDownstream() {
+        assertThrows(
+                NullPointerException.class,
+                () -> new ConversationTurnModelStreamAccumulator(
+                        new ObjectMapper(),
+                        null
+                )
+        );
+    }
+
+    @Test
+    void shouldRejectNullObjectMapper() {
+        assertThrows(
+                NullPointerException.class,
+                () -> new ConversationTurnModelStreamAccumulator(
+                        null,
+                        event -> {
+                        }
+                )
         );
     }
 

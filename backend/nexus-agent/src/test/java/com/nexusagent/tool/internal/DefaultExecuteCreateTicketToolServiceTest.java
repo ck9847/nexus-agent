@@ -22,6 +22,7 @@ import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -387,6 +388,170 @@ class DefaultExecuteCreateTicketToolServiceTest {
         );
 
         verify(transactions, never()).claim(any());
+    }
+
+    @Test
+    void shouldImplementToolExecutionServiceContract() {
+        assertInstanceOf(
+                CreateTicketToolExecutionService.class,
+                service
+        );
+    }
+
+    @Test
+    void shouldFailPendingWithInvalidInputClassification() {
+        IllegalArgumentException inputFailure =
+                new IllegalArgumentException("bad input");
+
+        service.failPending(context(), inputFailure);
+
+        ArgumentCaptor<CreateTicketToolFailure> failureCaptor =
+                ArgumentCaptor.forClass(
+                        CreateTicketToolFailure.class
+                );
+
+        verify(transactions).fail(
+                any(),
+                failureCaptor.capture()
+        );
+
+        CreateTicketToolFailure failure =
+                failureCaptor.getValue();
+
+        assertEquals(
+                "INVALID_TOOL_INPUT",
+                failure.errorCode()
+        );
+        assertEquals(
+                "Create ticket tool input is invalid",
+                failure.safeMessage()
+        );
+        assertEquals(NOW, failure.failedAt());
+    }
+
+    @Test
+    void shouldFailPendingWithSafeExecutionFailure() {
+        IllegalStateException executionFailure =
+                new IllegalStateException(
+                        "provider-secret-must-not-leak"
+                );
+
+        service.failPending(context(), executionFailure);
+
+        ArgumentCaptor<CreateTicketToolFailure> failureCaptor =
+                ArgumentCaptor.forClass(
+                        CreateTicketToolFailure.class
+                );
+
+        verify(transactions).fail(
+                any(),
+                failureCaptor.capture()
+        );
+
+        CreateTicketToolFailure failure =
+                failureCaptor.getValue();
+
+        assertEquals(
+                "CREATE_TICKET_TOOL_FAILED",
+                failure.errorCode()
+        );
+        assertEquals(
+                "Create ticket tool execution failed",
+                failure.safeMessage()
+        );
+        assertFalse(
+                failure.safeMessage()
+                        .contains("provider-secret")
+        );
+        assertFalse(
+                failure.errorCode()
+                        .contains("provider-secret")
+        );
+        assertEquals(NOW, failure.failedAt());
+    }
+
+    @Test
+    void shouldUseFinalizationExceptionAsPrimaryInFailPending() {
+        IllegalStateException compensationTrigger =
+                new IllegalStateException(
+                        "tool call completion boom"
+                );
+        IllegalStateException finalizationFailure =
+                new IllegalStateException("finalization boom");
+
+        doThrow(finalizationFailure)
+                .when(transactions)
+                .fail(any(), any());
+
+        IllegalStateException thrown =
+                assertThrows(
+                        IllegalStateException.class,
+                        () -> service.failPending(
+                                context(),
+                                compensationTrigger
+                        )
+                );
+
+        assertSame(finalizationFailure, thrown);
+        assertEquals(1, thrown.getSuppressed().length);
+        assertSame(
+                compensationTrigger,
+                thrown.getSuppressed()[0]
+        );
+    }
+
+    @Test
+    void shouldNotSelfSuppressInFailPendingWhenSameInstance() {
+        IllegalStateException sharedFailure =
+                new IllegalStateException("shared boom");
+
+        doThrow(sharedFailure)
+                .when(transactions)
+                .fail(any(), any());
+
+        IllegalStateException thrown =
+                assertThrows(
+                        IllegalStateException.class,
+                        () -> service.failPending(
+                                context(),
+                                sharedFailure
+                        )
+                );
+
+        assertSame(sharedFailure, thrown);
+        assertEquals(0, thrown.getSuppressed().length);
+    }
+
+    @Test
+    void shouldRejectNullContextInFailPending() {
+        assertThrows(
+                NullPointerException.class,
+                () -> service.failPending(
+                        null,
+                        new IllegalStateException("boom")
+                )
+        );
+
+        verify(transactions, never()).fail(
+                any(),
+                any()
+        );
+    }
+
+    @Test
+    void shouldRejectNullFailureInFailPending() {
+        assertThrows(
+                NullPointerException.class,
+                () -> service.failPending(
+                        context(),
+                        null
+                )
+        );
+
+        verify(transactions, never()).fail(
+                any(),
+                any()
+        );
     }
 
     private static AgentToolExecutionContext context() {
