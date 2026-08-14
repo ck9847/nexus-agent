@@ -2,6 +2,9 @@ spring:
   application:
     name: nexus-agent
 
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+
   datasource:
     url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3307}/${MYSQL_DATABASE:nexus_agent}?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&useSSL=false&allowPublicKeyRetrieval=true
     username: ${MYSQL_USER:nexus_app}
@@ -34,6 +37,8 @@ management:
   endpoint:
     health:
       show-details: when_authorized
+      probes:
+        enabled: true
 
   health:
     readiness-state:
