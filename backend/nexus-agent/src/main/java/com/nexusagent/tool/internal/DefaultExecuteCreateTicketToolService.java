@@ -1,5 +1,6 @@
 package com.nexusagent.tool.internal;
 
+import com.nexusagent.tool.api.ToolExecutionInProgressException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -28,16 +29,19 @@ public class DefaultExecuteCreateTicketToolService
     private final CreateTicketToolExecutionTransactions
             transactions;
     private final Clock clock;
+    private final ToolExecutionMetrics metrics;
 
     public DefaultExecuteCreateTicketToolService(
             CreateTicketToolExecutionTransactions
                     transactions,
-            Clock clock
+            Clock clock,
+            ToolExecutionMetrics metrics
     ) {
         this.transactions = Objects.requireNonNull(
                 transactions
         );
         this.clock = Objects.requireNonNull(clock);
+        this.metrics = Objects.requireNonNull(metrics);
     }
 
     @Override
@@ -54,19 +58,48 @@ public class DefaultExecuteCreateTicketToolService
 
         try {
             claim = transactions.claim(context);
+        } catch (ToolExecutionInProgressException inProgress) {
+            metrics.count(
+                    ToolExecutionMetrics.OUTCOME_IN_PROGRESS,
+                    false
+            );
+            throw inProgress;
         } catch (IllegalArgumentException inputFailure) {
+            metrics.count(
+                    ToolExecutionMetrics.OUTCOME_FAILED,
+                    false
+            );
             failPending(context, inputFailure);
 
             throw inputFailure;
         }
 
         if (claim.replayResult() != null) {
+            // 幂等重放绝不统计成第二次业务成功。
+            metrics.count(
+                    ToolExecutionMetrics.OUTCOME_REPLAYED,
+                    true
+            );
             return claim.replayResult();
         }
 
         try {
-            return transactions.succeed(claim);
+            ExecuteCreateTicketToolResult result =
+                    transactions.succeed(claim);
+
+            // count 内部吞掉所有指标异常：succeed 已提交成功时，
+            // 绝不因指标异常向调用方报告失败或触发 failPending。
+            metrics.count(
+                    ToolExecutionMetrics.OUTCOME_SUCCEEDED,
+                    false
+            );
+
+            return result;
         } catch (RuntimeException executionFailure) {
+            metrics.count(
+                    ToolExecutionMetrics.OUTCOME_FAILED,
+                    false
+            );
             failPending(context, executionFailure);
 
             throw executionFailure;

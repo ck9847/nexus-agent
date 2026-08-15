@@ -3,13 +3,17 @@ package com.nexusagent.tool.internal;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nexusagent.common.id.IdGenerator;
+import com.nexusagent.common.observability.RequestCorrelation;
+import com.nexusagent.common.observability.RequestCorrelationProvider;
 import com.nexusagent.common.security.CurrentActor;
 import com.nexusagent.common.security.CurrentActorProvider;
 import com.nexusagent.conversation.api.ConversationNotFoundException;
+import com.nexusagent.testing.ThrowingMeterRegistry;
 import com.nexusagent.tool.api.RegisterToolExecutionCommand;
 import com.nexusagent.tool.api.RegisterToolExecutionResult;
 import com.nexusagent.tool.domain.ToolExecutionStatus;
 import com.nexusagent.tool.internal.persistence.ToolExecutionRow;
+import io.micrometer.core.instrument.Counter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -77,6 +81,13 @@ class DefaultRegisterToolExecutionServiceTest {
                     Set.of("MEMBER")
             );
 
+    private static final RequestCorrelation CORRELATION =
+            new RequestCorrelation(
+                    "ctx-req-1",
+                    "ctx-trace-1",
+                    "10.0.0.9"
+            );
+
     private static final ObjectMapper OBJECT_MAPPER =
             new ObjectMapper();
 
@@ -96,7 +107,13 @@ class DefaultRegisterToolExecutionServiceTest {
     private ToolExecutionRegistrationTransactions transactions;
 
     @Mock
+    private RequestCorrelationProvider correlationProvider;
+
+    @Mock
     private Clock clock;
+
+    private final ThrowingMeterRegistry meterRegistry =
+            new ThrowingMeterRegistry();
 
     private DefaultRegisterToolExecutionService service;
 
@@ -108,7 +125,9 @@ class DefaultRegisterToolExecutionServiceTest {
                 keyFactory,
                 inputJsonCodec,
                 transactions,
-                clock
+                correlationProvider,
+                clock,
+                new ToolExecutionMetrics(meterRegistry)
         );
     }
 
@@ -141,6 +160,89 @@ class DefaultRegisterToolExecutionServiceTest {
         );
         assertTrue(result.newlyCreated());
         assertEquals(NOW, result.createdAt());
+
+        verify(transactions).insert(
+                any(CurrentActor.class),
+                any(ToolExecutionRow.class)
+        );
+    }
+
+    @Test
+    void shouldReturnNewlyCreatedWhenMetricsFailAfterInsert() {
+        // insert 已提交成功；指标异常必须被吞掉：
+        // 仍返回 newlyCreated=true，不调用 recover，不重复注册。
+        meterRegistry.throwOnCounterCreation();
+
+        stubActorAndInputs();
+        stubIdAndClock();
+
+        when(transactions.insert(
+                any(CurrentActor.class),
+                any(ToolExecutionRow.class)
+        )).thenAnswer(invocation ->
+                invocation.getArgument(1)
+        );
+
+        RegisterToolExecutionResult result =
+                service.register(command(false));
+
+        assertTrue(result.newlyCreated());
+        assertEquals(
+                EXECUTION_ID,
+                result.toolExecutionId()
+        );
+        assertEquals(
+                ToolExecutionStatus.PENDING,
+                result.status()
+        );
+        assertEquals(NOW, result.createdAt());
+
+        verify(transactions).insert(
+                any(CurrentActor.class),
+                any(ToolExecutionRow.class)
+        );
+        verify(transactions, never()).recover(
+                any(CurrentActor.class),
+                any(ToolExecutionRow.class)
+        );
+    }
+
+    @Test
+    void shouldReplayExistingExecutionWhenMetricsFail() {
+        // 幂等重放结果绝不能因指标异常改变或抛错：
+        // 仍返回原 execution，newlyCreated=false。
+        meterRegistry.throwOnCounterCreation();
+
+        stubActorAndInputs();
+        stubIdAndClock();
+
+        ToolExecutionRow existing = row(
+                9000L,
+                ToolExecutionStatus.SUCCEEDED,
+                "trace-1",
+                OLD_NOW
+        );
+
+        when(transactions.insert(
+                any(CurrentActor.class),
+                any(ToolExecutionRow.class)
+        )).thenThrow(new DuplicateKeyException("duplicate"));
+
+        when(transactions.recover(
+                any(CurrentActor.class),
+                any(ToolExecutionRow.class)
+        )).thenReturn(Optional.of(existing));
+
+        RegisterToolExecutionResult result =
+                service.register(command(false));
+
+        assertEquals(9000L, result.toolExecutionId());
+        assertEquals(
+                ToolExecutionStatus.SUCCEEDED,
+                result.status()
+        );
+        assertFalse(result.newlyCreated());
+        assertEquals(OLD_NOW, result.createdAt());
 
         verify(transactions).insert(
                 any(CurrentActor.class),
@@ -462,6 +564,322 @@ class DefaultRegisterToolExecutionServiceTest {
     }
 
     @Test
+    void shouldFillTraceIdFromCorrelationWhenCommandTraceMissing() {
+        stubActorAndInputs();
+        stubIdAndClock();
+
+        when(correlationProvider.currentCorrelation())
+                .thenReturn(Optional.of(CORRELATION));
+
+        when(transactions.insert(
+                any(CurrentActor.class),
+                any(ToolExecutionRow.class)
+        )).thenAnswer(invocation ->
+                invocation.getArgument(1)
+        );
+
+        service.register(commandWithTrace(null));
+
+        ArgumentCaptor<ToolExecutionRow> captor =
+                ArgumentCaptor.forClass(ToolExecutionRow.class);
+
+        verify(transactions).insert(
+                any(CurrentActor.class),
+                captor.capture()
+        );
+
+        assertEquals(
+                "ctx-trace-1",
+                captor.getValue().traceId()
+        );
+    }
+
+    @Test
+    void shouldPreferCommandTraceIdOverCorrelation() {
+        stubActorAndInputs();
+        stubIdAndClock();
+
+        when(transactions.insert(
+                any(CurrentActor.class),
+                any(ToolExecutionRow.class)
+        )).thenAnswer(invocation ->
+                invocation.getArgument(1)
+        );
+
+        service.register(commandWithTrace("explicit-trace"));
+
+        ArgumentCaptor<ToolExecutionRow> captor =
+                ArgumentCaptor.forClass(ToolExecutionRow.class);
+
+        verify(transactions).insert(
+                any(CurrentActor.class),
+                captor.capture()
+        );
+
+        assertEquals(
+                "explicit-trace",
+                captor.getValue().traceId()
+        );
+
+        // 命令显式值优先：完全不需要查询 HTTP 上下文。
+        verifyNoInteractions(correlationProvider);
+    }
+
+    @Test
+    void shouldWriteNullTraceWithoutCorrelationContext() {
+        stubActorAndInputs();
+        stubIdAndClock();
+
+        // Optional.empty() 表示正常无 HTTP 上下文，允许写入 null。
+        when(correlationProvider.currentCorrelation())
+                .thenReturn(Optional.empty());
+
+        when(transactions.insert(
+                any(CurrentActor.class),
+                any(ToolExecutionRow.class)
+        )).thenAnswer(invocation ->
+                invocation.getArgument(1)
+        );
+
+        service.register(commandWithTrace(null));
+
+        ArgumentCaptor<ToolExecutionRow> captor =
+                ArgumentCaptor.forClass(ToolExecutionRow.class);
+
+        verify(transactions).insert(
+                any(CurrentActor.class),
+                captor.capture()
+        );
+
+        assertEquals(null, captor.getValue().traceId());
+    }
+
+    @Test
+    void shouldPropagateCorrelationProviderFailure() {
+        stubActorAndInputs();
+        stubIdAndClock();
+
+        // Provider 实现自身的真实故障：绝不能像旧实现那样
+        // 捕获 IllegalStateException 并误判为"没有请求上下文"。
+        IllegalStateException providerFailure =
+                new IllegalStateException("provider boom");
+
+        when(correlationProvider.currentCorrelation())
+                .thenThrow(providerFailure);
+
+        IllegalStateException thrown = assertThrows(
+                IllegalStateException.class,
+                () -> service.register(commandWithTrace(null))
+        );
+
+        assertSame(providerFailure, thrown);
+
+        verify(transactions, never()).insert(
+                any(CurrentActor.class),
+                any(ToolExecutionRow.class)
+        );
+    }
+
+    @Test
+    void shouldReplayWithCorrelationTraceWithoutConflict() {
+        stubActorAndInputs();
+        stubIdAndClock();
+
+        ToolExecutionRow existing = row(
+                9000L,
+                ToolExecutionStatus.SUCCEEDED,
+                "trace-1",
+                OLD_NOW
+        );
+
+        when(correlationProvider.currentCorrelation())
+                .thenReturn(Optional.of(CORRELATION));
+
+        when(transactions.insert(
+                any(CurrentActor.class),
+                any(ToolExecutionRow.class)
+        )).thenThrow(new DuplicateKeyException("duplicate"));
+
+        when(transactions.recover(
+                any(CurrentActor.class),
+                any(ToolExecutionRow.class)
+        )).thenReturn(Optional.of(existing));
+
+        RegisterToolExecutionResult result =
+                service.register(commandWithTrace(null));
+
+        ArgumentCaptor<ToolExecutionRow> captor =
+                ArgumentCaptor.forClass(ToolExecutionRow.class);
+
+        verify(transactions).recover(
+                any(CurrentActor.class),
+                captor.capture()
+        );
+
+        // 重试携带新的上下文 traceId 不产生冲突……
+        assertEquals(
+                "ctx-trace-1",
+                captor.getValue().traceId()
+        );
+
+        // ……且已持久化 execution 的原始 traceId 不更新：
+        // 返回的仍是历史行（SUCCEEDED、旧 createdAt、非新建）。
+        assertEquals(9000L, result.toolExecutionId());
+        assertEquals(
+                ToolExecutionStatus.SUCCEEDED,
+                result.status()
+        );
+        assertEquals(OLD_NOW, result.createdAt());
+        assertFalse(result.newlyCreated());
+    }
+
+    @Test
+    void shouldCountRegisteredOutcome() {
+        stubActorAndInputs();
+        stubIdAndClock();
+
+        when(transactions.insert(
+                any(CurrentActor.class),
+                any(ToolExecutionRow.class)
+        )).thenAnswer(invocation ->
+                invocation.getArgument(1)
+        );
+
+        service.register(command(false));
+
+        assertEquals(
+                1.0,
+                outcomeCount(
+                        ToolExecutionMetrics.OUTCOME_REGISTERED,
+                        false
+                )
+        );
+        assertEquals(
+                0.0,
+                outcomeCount(
+                        ToolExecutionMetrics.OUTCOME_REPLAYED,
+                        true
+                )
+        );
+    }
+
+    @Test
+    void shouldCountReplayedNotRegisteredOnDuplicateRecovery() {
+        stubActorAndInputs();
+        stubIdAndClock();
+
+        ToolExecutionRow existing = row(
+                9000L,
+                ToolExecutionStatus.SUCCEEDED,
+                "trace-1",
+                OLD_NOW
+        );
+
+        when(transactions.insert(
+                any(CurrentActor.class),
+                any(ToolExecutionRow.class)
+        )).thenThrow(new DuplicateKeyException("duplicate"));
+
+        when(transactions.recover(
+                any(CurrentActor.class),
+                any(ToolExecutionRow.class)
+        )).thenReturn(Optional.of(existing));
+
+        service.register(command(false));
+
+        // 幂等重放绝不统计成第二次业务成功。
+        assertEquals(
+                1.0,
+                outcomeCount(
+                        ToolExecutionMetrics.OUTCOME_REPLAYED,
+                        true
+                )
+        );
+        assertEquals(
+                0.0,
+                outcomeCount(
+                        ToolExecutionMetrics.OUTCOME_REGISTERED,
+                        false
+                )
+        );
+    }
+
+    @Test
+    void shouldCountConflictOnIdempotencyConflict() {
+        stubActorAndInputs();
+        stubIdAndClock();
+
+        when(transactions.insert(
+                any(CurrentActor.class),
+                any(ToolExecutionRow.class)
+        )).thenThrow(new DuplicateKeyException("duplicate"));
+
+        when(transactions.recover(
+                any(CurrentActor.class),
+                any(ToolExecutionRow.class)
+        )).thenThrow(
+                new com.nexusagent.tool.api
+                        .ToolExecutionIdempotencyConflictException()
+        );
+
+        assertThrows(
+                com.nexusagent.tool.api
+                        .ToolExecutionIdempotencyConflictException.class,
+                () -> service.register(command(false))
+        );
+
+        assertEquals(
+                1.0,
+                outcomeCount(
+                        ToolExecutionMetrics.OUTCOME_CONFLICT,
+                        true
+                )
+        );
+    }
+
+    @Test
+    void shouldCountReplayedOnHistoricalRecovery() {
+        stubActorAndInputs();
+        stubIdAndClock();
+
+        ToolExecutionRow existing = row(
+                9000L,
+                ToolExecutionStatus.SUCCEEDED,
+                "trace-1",
+                OLD_NOW
+        );
+
+        when(transactions.insert(
+                any(CurrentActor.class),
+                any(ToolExecutionRow.class)
+        )).thenThrow(
+                new ToolExecutionRegistrationScopeException()
+        );
+
+        when(transactions.recover(
+                any(CurrentActor.class),
+                any(ToolExecutionRow.class)
+        )).thenReturn(Optional.of(existing));
+
+        service.register(command(false));
+
+        assertEquals(
+                1.0,
+                outcomeCount(
+                        ToolExecutionMetrics.OUTCOME_REPLAYED,
+                        true
+                )
+        );
+        assertEquals(
+                0.0,
+                outcomeCount(
+                        ToolExecutionMetrics.OUTCOME_REGISTERED,
+                        false
+                )
+        );
+    }
+
+    @Test
     void shouldNotOverwriteHistoricalTraceOnReplay() {
         stubActorAndInputs();
         stubIdAndClock();
@@ -535,6 +953,30 @@ class DefaultRegisterToolExecutionServiceTest {
                 .thenReturn(EXECUTION_ID);
 
         when(clock.instant()).thenReturn(RAW_NOW);
+    }
+
+    private double outcomeCount(
+            String outcome,
+            boolean replayed
+    ) {
+        Counter counter = meterRegistry.find(
+                        ToolExecutionMetrics.METRIC_NAME
+                )
+                .tag(
+                        ToolExecutionMetrics.TAG_TOOL,
+                        ToolExecutionMetrics.TOOL_CREATE_TICKET
+                )
+                .tag(
+                        ToolExecutionMetrics.TAG_REPLAYED,
+                        Boolean.toString(replayed)
+                )
+                .tag(
+                        ToolExecutionMetrics.TAG_OUTCOME,
+                        outcome
+                )
+                .counter();
+
+        return counter == null ? 0.0 : counter.count();
     }
 
     private static RegisterToolExecutionCommand command(

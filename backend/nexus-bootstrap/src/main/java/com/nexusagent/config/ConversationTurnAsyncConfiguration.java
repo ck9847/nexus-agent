@@ -1,10 +1,12 @@
 package com.nexusagent.config;
 
+import com.nexusagent.observability.RequestCorrelationTaskDecorator;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.task.AsyncTaskExecutor;
+import org.springframework.core.task.TaskDecorator;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.security.task.DelegatingSecurityContextAsyncTaskExecutor;
 
@@ -21,6 +23,12 @@ import java.util.concurrent.ThreadPoolExecutor;
  * {@code DelegatingSecurityContextRunnable} 清理线程上下文，
  * 避免上下文在池线程之间泄漏。
  *
+ * <p>worker 线程池挂载 {@link RequestCorrelationTaskDecorator}，
+ * 提交时同步捕获请求关联（requestId/traceId/ipAddress + MDC），
+ * worker 执行前恢复、执行后还原原值；外层
+ * {@link DelegatingSecurityContextAsyncTaskExecutor} 继续负责
+ * JWT {@code SecurityContext} 的传播，两者互不干扰。
+ *
  * <p>worker 线程池采用有界队列 + AbortPolicy，容量满时
  * {@code submit} 抛 {@code TaskRejectedException}，
  * 由 {@code ConversationTurnStreamController} 映射为 503。
@@ -33,11 +41,15 @@ public class ConversationTurnAsyncConfiguration {
 
     @Bean(name = "conversationTurnWorkerExecutor")
     ThreadPoolTaskExecutor conversationTurnWorkerExecutor(
-            ConversationTurnStreamingProperties properties
+            ConversationTurnStreamingProperties properties,
+            TaskDecorator requestCorrelationTaskDecorator
     ) {
         ThreadPoolTaskExecutor executor =
                 new ThreadPoolTaskExecutor();
 
+        executor.setTaskDecorator(
+                requestCorrelationTaskDecorator
+        );
         executor.setCorePoolSize(
                 properties.corePoolSize()
         );

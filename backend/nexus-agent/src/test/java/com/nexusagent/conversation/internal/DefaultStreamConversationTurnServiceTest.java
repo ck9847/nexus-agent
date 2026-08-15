@@ -19,6 +19,7 @@ import com.nexusagent.model.api.ChatModelStreamHandler;
 import com.nexusagent.model.api.ChatModelToolCall;
 import com.nexusagent.model.api.ChatTokenUsage;
 import com.nexusagent.model.api.ChatToolDefinition;
+import com.nexusagent.testing.ThrowingMeterRegistry;
 import com.nexusagent.ticket.domain.TicketStatus;
 import com.nexusagent.tool.api.RegisterToolExecutionCommand;
 import com.nexusagent.tool.api.RegisterToolExecutionResult;
@@ -28,6 +29,8 @@ import com.nexusagent.tool.internal.AgentToolExecutionContext;
 import com.nexusagent.tool.internal.CreateTicketChatToolDefinition;
 import com.nexusagent.tool.internal.CreateTicketToolExecutionService;
 import com.nexusagent.tool.internal.ExecuteCreateTicketToolResult;
+import io.micrometer.core.instrument.MockClock;
+import io.micrometer.core.instrument.Timer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -45,6 +48,8 @@ import java.lang.reflect.Method;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
@@ -319,6 +324,11 @@ class DefaultStreamConversationTurnServiceTest {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    private final MockClock meterClock = new MockClock();
+
+    private final ThrowingMeterRegistry meterRegistry =
+            new ThrowingMeterRegistry(meterClock);
+
     private DefaultStreamConversationTurnService service;
 
     @BeforeEach
@@ -333,7 +343,8 @@ class DefaultStreamConversationTurnServiceTest {
                 registerToolExecutionService,
                 completeToolCallService,
                 toolExecutionService,
-                continuationService
+                continuationService,
+                new ConversationTurnMetrics(meterRegistry)
         );
 
         lenient().when(createTicketTool.definition())
@@ -1887,6 +1898,618 @@ class DefaultStreamConversationTurnServiceTest {
                 Propagation.NOT_SUPPORTED,
                 transactional.propagation()
         );
+    }
+
+    @Test
+    void shouldRecordCompletedTextOutcomeOnce() {
+        stubTextRoundSuccess();
+
+        service.stream("901", "Question", event -> {
+        });
+
+        assertEquals(
+                1.0,
+                turnCount(
+                        ConversationTurnOutcome.COMPLETED_TEXT
+                )
+        );
+        assertEquals(
+                0.0,
+                turnCount(
+                        ConversationTurnOutcome.COMPLETED_TOOL
+                )
+        );
+        assertEquals(
+                0.0,
+                turnCount(
+                        ConversationTurnOutcome.MODEL_FAILED
+                )
+        );
+        assertEquals(
+                0.0,
+                turnCount(
+                        ConversationTurnOutcome.TOOL_FAILED
+                )
+        );
+        assertEquals(
+                0.0,
+                turnCount(
+                        ConversationTurnOutcome.CLIENT_DISCONNECTED
+                )
+        );
+        assertEquals(
+                0.0,
+                turnCount(
+                        ConversationTurnOutcome.INTERNAL_FAILED
+                )
+        );
+    }
+
+    @Test
+    void shouldRecordCompletedToolOutcomeSeparately() {
+        stubToolRoundHappyPath();
+
+        when(completeService.complete(
+                same(CONTINUATION),
+                eq("Ticket created"),
+                eq(FINISH_REASON),
+                eq(SECOND_USAGE)
+        )).thenReturn(COMPLETED_CONTINUATION);
+
+        service.stream("901", "Question", event -> {
+        });
+
+        assertEquals(
+                1.0,
+                turnCount(
+                        ConversationTurnOutcome.COMPLETED_TOOL
+                )
+        );
+        assertEquals(
+                0.0,
+                turnCount(
+                        ConversationTurnOutcome.COMPLETED_TEXT
+                )
+        );
+    }
+
+    @Test
+    void shouldRecordModelFailedOutcome() {
+        when(prepareService.prepare(any(), any()))
+                .thenReturn(PREPARED);
+        when(gatewayResolver.requireGateway(any()))
+                .thenReturn(gateway);
+
+        doThrow(new ChatModelException(
+                ChatModelErrorCategory.RATE_LIMIT,
+                "rate limited",
+                429,
+                null
+        )).when(gateway).stream(any(), any());
+
+        assertThrows(
+                ChatModelException.class,
+                () -> service.stream(
+                        "901",
+                        "Question",
+                        event -> {
+                        }
+                )
+        );
+
+        assertEquals(
+                1.0,
+                turnCount(
+                        ConversationTurnOutcome.MODEL_FAILED
+                )
+        );
+        assertEquals(
+                0.0,
+                turnCount(
+                        ConversationTurnOutcome.COMPLETED_TEXT
+                )
+        );
+    }
+
+    @Test
+    void shouldRecordClientDisconnectedOutcome() {
+        when(prepareService.prepare(any(), any()))
+                .thenReturn(PREPARED);
+        when(gatewayResolver.requireGateway(any()))
+                .thenReturn(gateway);
+
+        doThrow(new ChatModelException(
+                ChatModelErrorCategory.STREAM_INTERRUPTED,
+                "Conversation turn stream delivery failed"
+        )).when(gateway).stream(any(), any());
+
+        assertThrows(
+                ChatModelException.class,
+                () -> service.stream(
+                        "901",
+                        "Question",
+                        event -> {
+                        }
+                )
+        );
+
+        assertEquals(
+                1.0,
+                turnCount(
+                        ConversationTurnOutcome.CLIENT_DISCONNECTED
+                )
+        );
+        assertEquals(
+                0.0,
+                turnCount(
+                        ConversationTurnOutcome.MODEL_FAILED
+                )
+        );
+    }
+
+    @Test
+    void shouldRecordToolFailedOutcomeWhenExecutionFails() {
+        stubFirstModelToolCall();
+        stubRegistrationAndToolCallCompletion();
+
+        when(toolExecutionService.execute(any()))
+                .thenThrow(new IllegalStateException(
+                        "execution boom"
+                ));
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> service.stream(
+                        "901",
+                        "Question",
+                        event -> {
+                        }
+                )
+        );
+
+        assertEquals(
+                1.0,
+                turnCount(
+                        ConversationTurnOutcome.TOOL_FAILED
+                )
+        );
+        assertEquals(
+                0.0,
+                turnCount(
+                        ConversationTurnOutcome.COMPLETED_TOOL
+                )
+        );
+    }
+
+    @Test
+    void shouldNotRecordSuccessWhenCompleteServiceFails() {
+        stubTextRoundSuccess();
+
+        when(completeService.complete(
+                any(),
+                any(),
+                any(),
+                any()
+        )).thenThrow(new IllegalStateException(
+                "completion boom"
+        ));
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> service.stream(
+                        "901",
+                        "Question",
+                        event -> {
+                        }
+                )
+        );
+
+        assertEquals(
+                1.0,
+                turnCount(
+                        ConversationTurnOutcome.INTERNAL_FAILED
+                )
+        );
+        assertEquals(
+                0.0,
+                turnCount(
+                        ConversationTurnOutcome.COMPLETED_TEXT
+                )
+        );
+    }
+
+    @Test
+    void shouldRecordSingleOutcomeWhenFailServiceAlsoFails() {
+        when(prepareService.prepare(any(), any()))
+                .thenReturn(PREPARED);
+        when(gatewayResolver.requireGateway(any()))
+                .thenReturn(gateway);
+
+        doThrow(new ChatModelException(
+                ChatModelErrorCategory.RATE_LIMIT,
+                "rate limited",
+                429,
+                null
+        )).when(gateway).stream(any(), any());
+
+        doThrow(new IllegalStateException(
+                "finalization boom"
+        )).when(failService).fail(any(), any());
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> service.stream(
+                        "901",
+                        "Question",
+                        event -> {
+                        }
+                )
+        );
+
+        // failService 再失败：仍只记录一个最终 outcome。
+        assertEquals(
+                1.0,
+                turnCount(
+                        ConversationTurnOutcome.MODEL_FAILED
+                )
+        );
+        assertEquals(
+                0.0,
+                turnCount(
+                        ConversationTurnOutcome.INTERNAL_FAILED
+                )
+        );
+        assertEquals(
+                0.0,
+                turnCount(
+                        ConversationTurnOutcome.COMPLETED_TEXT
+                )
+        );
+    }
+
+    @Test
+    void shouldMeasureDurationWithMonotonicClock() {
+        when(prepareService.prepare(any(), any()))
+                .thenReturn(PREPARED);
+        when(gatewayResolver.requireGateway(any()))
+                .thenReturn(gateway);
+
+        doAnswer(invocation -> {
+            ChatModelStreamHandler modelHandler =
+                    invocation.getArgument(1);
+
+            // turn 执行期间单调时钟推进 5 秒；
+            // Instant 完全未被使用。
+            meterClock.addSeconds(5);
+
+            modelHandler.onEvent(
+                    new ChatModelStreamEvent.TextDelta("Hello")
+            );
+            modelHandler.onEvent(
+                    new ChatModelStreamEvent.Completed(
+                            FINISH_REASON,
+                            USAGE
+                    )
+            );
+            return null;
+        }).when(gateway).stream(any(), any());
+
+        when(completeService.complete(
+                any(),
+                any(),
+                any(),
+                any()
+        )).thenReturn(COMPLETED);
+
+        service.stream("901", "Question", event -> {
+        });
+
+        assertEquals(
+                5.0,
+                turnTotalSeconds(
+                        ConversationTurnOutcome.COMPLETED_TEXT
+                ),
+                0.001
+        );
+    }
+
+    @Test
+    void shouldCompleteTurnWhenTimerStopFails() {
+        // turn 已经成功：timer 创建失败必须被吞掉，
+        // handler 仍收到 Completed，绝不能触发 failService。
+        meterRegistry.throwOnTimerCreation();
+
+        stubTextRoundSuccess();
+
+        List<ConversationTurnStreamEvent> received =
+                new ArrayList<>();
+
+        service.stream("901", "Question", received::add);
+
+        assertTrue(received.stream().anyMatch(event ->
+                event
+                        instanceof
+                        ConversationTurnStreamEvent.Completed
+        ));
+
+        verify(completeService).complete(
+                same(PREPARED),
+                eq("Hello"),
+                eq(FINISH_REASON),
+                eq(USAGE)
+        );
+        verifyNoInteractions(failService);
+    }
+
+    @Test
+    void shouldKeepModelFailureWhenTimerStopAlsoFails() {
+        // 模型本身失败，同时 timer 停止抛错：
+        // 对外仍是原始 ChatModelException，
+        // 指标异常不能覆盖原异常，FAILED placeholder 正常持久化。
+        meterRegistry.throwOnTimerCreation();
+
+        when(prepareService.prepare(any(), any()))
+                .thenReturn(PREPARED);
+        when(gatewayResolver.requireGateway(any()))
+                .thenReturn(gateway);
+
+        ChatModelException modelFailure =
+                new ChatModelException(
+                        ChatModelErrorCategory.RATE_LIMIT,
+                        "rate limited",
+                        429,
+                        null
+                );
+
+        doThrow(modelFailure)
+                .when(gateway).stream(any(), any());
+
+        ChatModelException thrown = assertThrows(
+                ChatModelException.class,
+                () -> service.stream(
+                        "901",
+                        "Question",
+                        event -> {
+                        }
+                )
+        );
+
+        assertSame(modelFailure, thrown);
+        assertEquals(0, thrown.getSuppressed().length);
+
+        verify(failService).fail(
+                same(PREPARED),
+                same(modelFailure)
+        );
+        verifyNoInteractions(completeService);
+    }
+
+    @Test
+    void shouldCompleteTurnWhenTimerStartFails() {
+        // Timer 启动失败：退化为 no-op 观察，
+        // turn 仍完整成功，绝不抛指标异常。
+        meterRegistry.throwOnTimerStart();
+
+        stubTextRoundSuccess();
+
+        List<ConversationTurnStreamEvent> received =
+                new ArrayList<>();
+
+        service.stream("901", "Question", received::add);
+
+        assertTrue(received.stream().anyMatch(event ->
+                event
+                        instanceof
+                        ConversationTurnStreamEvent.Completed
+        ));
+
+        verify(completeService).complete(
+                same(PREPARED),
+                eq("Hello"),
+                eq(FINISH_REASON),
+                eq(USAGE)
+        );
+        verifyNoInteractions(failService);
+    }
+
+    @Test
+    void shouldExposeOnlyLowCardinalityTagsOnModelMetric() {
+        stubTextRoundSuccess();
+
+        service.stream("901", "Question", event -> {
+        });
+
+        // 再跑一次失败轮，覆盖 failure 时序的标签。
+        when(gatewayResolver.requireGateway(any()))
+                .thenReturn(gateway);
+        doThrow(new ChatModelException(
+                ChatModelErrorCategory.RATE_LIMIT,
+                "rate limited",
+                429,
+                null
+        )).when(gateway).stream(any(), any());
+
+        assertThrows(
+                ChatModelException.class,
+                () -> service.stream(
+                        "901",
+                        "Question",
+                        event -> {
+                        }
+                )
+        );
+
+        Set<String> allowedTagKeys = Set.of(
+                ConversationTurnMetrics.TAG_OUTCOME,
+                ConversationTurnMetrics.TAG_PROVIDER,
+                ConversationTurnMetrics.TAG_ERROR_CATEGORY
+        );
+
+        meterRegistry.find(
+                        ConversationTurnMetrics.MODEL_CALL_METRIC
+                )
+                .meters()
+                .forEach(meter -> meter.getId()
+                        .getTags()
+                        .forEach(tag -> assertTrue(
+                                allowedTagKeys.contains(
+                                        tag.getKey()
+                                ),
+                                "high-cardinality tag "
+                                        + "forbidden: "
+                                        + tag.getKey()
+                        )));
+    }
+
+    @Test
+    void shouldCountModelCallSuccess() {
+        stubTextRoundSuccess();
+
+        service.stream("901", "Question", event -> {
+        });
+
+        assertEquals(
+                1.0,
+                modelCallCount(
+                        ConversationTurnMetrics.OUTCOME_SUCCESS,
+                        "OPENAI",
+                        ConversationTurnMetrics
+                                .ERROR_CATEGORY_NONE
+                )
+        );
+        assertEquals(
+                0.0,
+                modelCallCount(
+                        ConversationTurnMetrics.OUTCOME_FAILURE,
+                        "OPENAI",
+                        ConversationTurnMetrics
+                                .ERROR_CATEGORY_NONE
+                )
+        );
+    }
+
+    @Test
+    void shouldCountModelCallFailure() {
+        when(prepareService.prepare(any(), any()))
+                .thenReturn(PREPARED);
+        when(gatewayResolver.requireGateway(any()))
+                .thenReturn(gateway);
+
+        doThrow(new ChatModelException(
+                ChatModelErrorCategory.RATE_LIMIT,
+                "rate limited",
+                429,
+                null
+        )).when(gateway).stream(any(), any());
+
+        assertThrows(
+                ChatModelException.class,
+                () -> service.stream(
+                        "901",
+                        "Question",
+                        event -> {
+                        }
+                )
+        );
+
+        assertEquals(
+                1.0,
+                modelCallCount(
+                        ConversationTurnMetrics.OUTCOME_FAILURE,
+                        "OPENAI",
+                        ConversationTurnMetrics
+                                .ERROR_CATEGORY_RATE_LIMIT
+                )
+        );
+        assertEquals(
+                0.0,
+                modelCallCount(
+                        ConversationTurnMetrics.OUTCOME_SUCCESS,
+                        "OPENAI",
+                        ConversationTurnMetrics
+                                .ERROR_CATEGORY_RATE_LIMIT
+                )
+        );
+    }
+
+    private void stubTextRoundSuccess() {
+        when(prepareService.prepare(any(), any()))
+                .thenReturn(PREPARED);
+        when(gatewayResolver.requireGateway(any()))
+                .thenReturn(gateway);
+
+        doAnswer(invocation -> {
+            ChatModelStreamHandler modelHandler =
+                    invocation.getArgument(1);
+            modelHandler.onEvent(
+                    new ChatModelStreamEvent.TextDelta("Hello")
+            );
+            modelHandler.onEvent(
+                    new ChatModelStreamEvent.Completed(
+                            FINISH_REASON,
+                            USAGE
+                    )
+            );
+            return null;
+        }).when(gateway).stream(any(), any());
+
+        when(completeService.complete(
+                any(),
+                any(),
+                any(),
+                any()
+        )).thenReturn(COMPLETED);
+    }
+
+    private double modelCallCount(
+            String outcome,
+            String provider,
+            String errorCategory
+    ) {
+        Timer timer = meterRegistry.find(
+                        ConversationTurnMetrics.MODEL_CALL_METRIC
+                )
+                .tag(
+                        ConversationTurnMetrics.TAG_OUTCOME,
+                        outcome
+                )
+                .tag(
+                        ConversationTurnMetrics.TAG_PROVIDER,
+                        provider
+                )
+                .tag(
+                        ConversationTurnMetrics
+                                .TAG_ERROR_CATEGORY,
+                        errorCategory
+                )
+                .timer();
+
+        return timer == null ? 0.0 : timer.count();
+    }
+
+    private double turnCount(ConversationTurnOutcome outcome) {
+        Timer timer = meterRegistry.find(
+                        ConversationTurnMetrics
+                                .TURN_DURATION_METRIC
+                )
+                .tag("outcome", outcome.name())
+                .timer();
+
+        return timer == null ? 0.0 : timer.count();
+    }
+
+    private double turnTotalSeconds(
+            ConversationTurnOutcome outcome
+    ) {
+        Timer timer = meterRegistry.find(
+                        ConversationTurnMetrics
+                                .TURN_DURATION_METRIC
+                )
+                .tag("outcome", outcome.name())
+                .timer();
+
+        assertNotNull(timer);
+        return timer.totalTime(TimeUnit.SECONDS);
     }
 
     private void stubFirstModelToolCall() {

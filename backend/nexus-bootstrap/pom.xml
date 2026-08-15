@@ -80,6 +80,11 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
         <!-- Persistence -->
         <dependency>
             <groupId>org.mybatis.spring.boot</groupId>

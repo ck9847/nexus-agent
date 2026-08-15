@@ -508,9 +508,18 @@ class ConversationCreationIT {
                         "SUCCESS",
                         audit.result()
                 ),
-                () -> assertNull(audit.requestId()),
-                () -> assertNull(audit.traceId()),
-                () -> assertNull(audit.ipAddress()),
+                // 关联信息由 RequestCorrelationFilter 自动生成
+                // 并由 AuditLogWriter 自动补充。
+                () -> assertNotNull(audit.requestId()),
+                () -> assertNotNull(audit.traceId()),
+                () -> assertEquals(
+                        audit.requestId(),
+                        audit.traceId()
+                ),
+                () -> assertEquals(
+                        "127.0.0.1",
+                        audit.ipAddress()
+                ),
                 () -> assertNull(audit.beforeJson()),
                 () -> assertEquals(
                         9,

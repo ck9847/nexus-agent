@@ -3,6 +3,7 @@ package com.nexusagent.conversation.api;
 import com.nexusagent.model.api.ChatModelErrorCategory;
 import com.nexusagent.model.api.ChatModelException;
 import com.nexusagent.model.api.ChatModelFinishReason;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.servlet.ServletException;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,6 +26,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -34,6 +36,7 @@ import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
@@ -67,6 +70,9 @@ class ConversationTurnStreamControllerTest {
 
     @MockitoBean(name = "conversationTurnStreamExecutor")
     private AsyncTaskExecutor executor;
+
+    @MockitoBean
+    private ConversationTurnSseMetrics metrics;
 
     @Test
     void shouldStartAsyncStreamAndDeliverCompletedEvent()
@@ -113,6 +119,13 @@ class ConversationTurnStreamControllerTest {
                 eq("901"),
                 eq("Hello"),
                 any(ConversationTurnStreamHandler.class)
+        );
+
+        // 连接指标：提交成功后 active 增加，
+        // Completed 送达后按正常完成结算。
+        verify(metrics).connectionEstablished();
+        verify(metrics).connectionEnded(
+                ConversationTurnSseMetrics.End.COMPLETED
         );
     }
 
@@ -211,7 +224,169 @@ class ConversationTurnStreamControllerTest {
                                         + "is temporarily unavailable"
                         ));
 
+        // executor reject：计入容量拒绝，且绝不增加 active。
+        verify(metrics).countCapacityRejected();
+        verify(metrics, never()).connectionEstablished();
+
         verifyNoInteractions(service);
+    }
+
+    @Test
+    void shouldNotLeakActiveWhenWorkerFinishesBeforeAccept()
+            throws Exception {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        ConversationTurnSseMetrics realMetrics =
+                new ConversationTurnSseMetrics(registry);
+
+        // metrics mock 委托到真实实现以便断言数值。
+        doAnswer(invocation -> {
+            realMetrics.connectionEstablished();
+            return null;
+        }).when(metrics).connectionEstablished();
+
+        doAnswer(invocation -> {
+            realMetrics.connectionEnded(
+                    invocation.getArgument(0)
+            );
+            return null;
+        }).when(metrics).connectionEnded(any());
+
+        // 同步 executor：worker 在 submit() 返回前即运行完毕，
+        // 触发 writer 的提前终态结算——这正是历史竞态。
+        doAnswer(invocation -> {
+            Runnable task = invocation.getArgument(0);
+            task.run();
+            return CompletableFuture.completedFuture(null);
+        }).when(executor).submit(any(Runnable.class));
+
+        doAnswer(invocation -> {
+            ConversationTurnStreamHandler handler =
+                    invocation.getArgument(2);
+            handler.onEvent(
+                    new ConversationTurnStreamEvent.Completed(
+                            "901",
+                            "500",
+                            "1002",
+                            3L,
+                            1,
+                            "gpt-5-mini",
+                            ChatModelFinishReason.STOP,
+                            12,
+                            34,
+                            CREATED_AT
+                    )
+            );
+            return null;
+        }).when(service).stream(
+                anyString(),
+                anyString(),
+                any()
+        );
+
+        mockMvc.perform(
+                        post(STREAM_PATH)
+                                .contentType(
+                                        MediaType.APPLICATION_JSON
+                                )
+                                .content(VALID_BODY)
+                )
+                .andExpect(status().isOk())
+                .andExpect(content().string(
+                        containsString("event:completed")
+                ));
+
+        // 竞态下 active 必须归零、established/completed 各一次。
+        assertEquals(
+                0,
+                realMetrics.activeConnections()
+        );
+
+        assertEquals(
+                1.0,
+                counterCount(
+                        registry,
+                        ConversationTurnSseMetrics
+                                .ESTABLISHED_COUNTER
+                )
+        );
+        assertEquals(
+                1.0,
+                counterCount(
+                        registry,
+                        ConversationTurnSseMetrics
+                                .COMPLETED_COUNTER
+                )
+        );
+    }
+
+    @Test
+    void shouldNotIncreaseActiveOnExecutorRejection()
+            throws Exception {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        ConversationTurnSseMetrics realMetrics =
+                new ConversationTurnSseMetrics(registry);
+
+        doAnswer(invocation -> {
+            realMetrics.connectionEstablished();
+            return null;
+        }).when(metrics).connectionEstablished();
+
+        doAnswer(invocation -> {
+            realMetrics.connectionEnded(
+                    invocation.getArgument(0)
+            );
+            return null;
+        }).when(metrics).connectionEnded(any());
+
+        doAnswer(invocation -> {
+            realMetrics.countCapacityRejected();
+            return null;
+        }).when(metrics).countCapacityRejected();
+
+        doThrow(new TaskRejectedException("queue full"))
+                .when(executor).submit(any(Runnable.class));
+
+        mockMvc.perform(
+                        post(STREAM_PATH)
+                                .contentType(
+                                        MediaType.APPLICATION_JSON
+                                )
+                                .content(VALID_BODY)
+                )
+                .andExpect(status().isServiceUnavailable());
+
+        // rejection 后 active 仍为 0、established 未计、
+        // 仅 capacity 计数器 +1。
+        assertEquals(
+                0,
+                realMetrics.activeConnections()
+        );
+        assertEquals(
+                0.0,
+                counterCount(
+                        registry,
+                        ConversationTurnSseMetrics
+                                .ESTABLISHED_COUNTER
+                )
+        );
+        assertEquals(
+                1.0,
+                counterCount(
+                        registry,
+                        ConversationTurnSseMetrics
+                                .CAPACITY_REJECTED_COUNTER
+                )
+        );
+    }
+
+    private static double counterCount(
+            io.micrometer.core.instrument.MeterRegistry registry,
+            String name
+    ) {
+        io.micrometer.core.instrument.Counter counter =
+                registry.find(name).counter();
+
+        return counter == null ? 0.0 : counter.count();
     }
 
     @Test
@@ -247,13 +422,15 @@ class ConversationTurnStreamControllerTest {
         AsyncTaskExecutor executor = this.executor;
         StreamConversationTurnService service = this.service;
         Duration timeout = Duration.ofMinutes(2);
+        ConversationTurnSseMetrics metrics = this.metrics;
 
         assertThrows(
                 NullPointerException.class,
                 () -> new ConversationTurnStreamController(
                         null,
                         executor,
-                        timeout
+                        timeout,
+                        metrics
                 )
         );
         assertThrows(
@@ -261,7 +438,8 @@ class ConversationTurnStreamControllerTest {
                 () -> new ConversationTurnStreamController(
                         service,
                         null,
-                        timeout
+                        timeout,
+                        metrics
                 )
         );
         assertThrows(
@@ -269,6 +447,16 @@ class ConversationTurnStreamControllerTest {
                 () -> new ConversationTurnStreamController(
                         service,
                         executor,
+                        null,
+                        metrics
+                )
+        );
+        assertThrows(
+                NullPointerException.class,
+                () -> new ConversationTurnStreamController(
+                        service,
+                        executor,
+                        timeout,
                         null
                 )
         );
@@ -278,13 +466,15 @@ class ConversationTurnStreamControllerTest {
     void shouldRejectNonPositiveTimeout() {
         AsyncTaskExecutor executor = this.executor;
         StreamConversationTurnService service = this.service;
+        ConversationTurnSseMetrics metrics = this.metrics;
 
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new ConversationTurnStreamController(
                         service,
                         executor,
-                        Duration.ZERO
+                        Duration.ZERO,
+                        metrics
                 )
         );
         assertThrows(
@@ -292,7 +482,8 @@ class ConversationTurnStreamControllerTest {
                 () -> new ConversationTurnStreamController(
                         service,
                         executor,
-                        Duration.ofSeconds(-1)
+                        Duration.ofSeconds(-1),
+                        metrics
                 )
         );
     }
@@ -499,7 +690,8 @@ class ConversationTurnStreamControllerTest {
                 new ConversationTurnStreamController(
                         service,
                         executor,
-                        Duration.ofMinutes(2)
+                        Duration.ofMinutes(2),
+                        metrics
                 );
 
         controller.handleWorkerFailure(
@@ -547,7 +739,8 @@ class ConversationTurnStreamControllerTest {
                 new ConversationTurnStreamController(
                         service,
                         executor,
-                        Duration.ofMinutes(2)
+                        Duration.ofMinutes(2),
+                        metrics
                 );
 
         assertDoesNotThrow(() ->

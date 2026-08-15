@@ -1,5 +1,6 @@
 package com.nexusagent.config;
 
+import com.nexusagent.observability.RequestCorrelationTaskDecorator;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.task.AsyncTaskExecutor;
@@ -58,7 +59,8 @@ class ConversationTurnAsyncConfigurationTest {
     void shouldConfigureBoundedWorkerPool() {
         ThreadPoolTaskExecutor executor =
                 configuration.conversationTurnWorkerExecutor(
-                        properties(4, 16, 100)
+                        properties(4, 16, 100),
+                        new RequestCorrelationTaskDecorator()
                 );
 
         assertEquals(4, executor.getCorePoolSize());
@@ -78,6 +80,27 @@ class ConversationTurnAsyncConfigurationTest {
                     ThreadPoolExecutor.AbortPolicy.class,
                     executor.getThreadPoolExecutor()
                             .getRejectedExecutionHandler()
+            );
+        } finally {
+            executor.shutdown();
+        }
+    }
+
+    @Test
+    void shouldAttachRequestCorrelationDecoratorToWorkerPool()
+            throws Exception {
+        ThreadPoolTaskExecutor executor =
+                configuration.conversationTurnWorkerExecutor(
+                        properties(4, 16, 100),
+                        new RequestCorrelationTaskDecorator()
+                );
+
+        try {
+            Object decorator = readTaskDecorator(executor);
+
+            assertInstanceOf(
+                    RequestCorrelationTaskDecorator.class,
+                    decorator
             );
         } finally {
             executor.shutdown();
@@ -240,6 +263,34 @@ class ConversationTurnAsyncConfigurationTest {
         SecurityContextHolder.setContext(context);
     }
 
+    /**
+     * {@code ThreadPoolTaskExecutor} 只有私有 {@code taskDecorator}
+     * 字段、没有公开 getter，只能通过反射读取。
+     */
+    private static Object readTaskDecorator(
+            ThreadPoolTaskExecutor executor
+    ) throws Exception {
+        Class<?> type = executor.getClass();
+
+        while (type != null) {
+            try {
+                java.lang.reflect.Field field =
+                        type.getDeclaredField("taskDecorator");
+
+                field.setAccessible(true);
+
+                return field.get(executor);
+            } catch (NoSuchFieldException ignored) {
+                type = type.getSuperclass();
+            }
+        }
+
+        throw new AssertionError(
+                "taskDecorator field not found "
+                        + "on executor hierarchy"
+        );
+    }
+
     private static Authentication runTaskCapture(
             AsyncTaskExecutor stream
     ) throws InterruptedException {
@@ -299,7 +350,8 @@ class ConversationTurnAsyncConfigurationTest {
 
             this.worker =
                     configuration.conversationTurnWorkerExecutor(
-                            properties(core, max, queue)
+                            properties(core, max, queue),
+                            new RequestCorrelationTaskDecorator()
                     );
             this.worker.afterPropertiesSet();
 

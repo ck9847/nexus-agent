@@ -35,13 +35,15 @@ public class ConversationTurnStreamController {
     private final StreamConversationTurnService service;
     private final AsyncTaskExecutor executor;
     private final Duration timeout;
+    private final ConversationTurnSseMetrics metrics;
 
     public ConversationTurnStreamController(
             StreamConversationTurnService service,
             @Qualifier("conversationTurnStreamExecutor")
             AsyncTaskExecutor executor,
             @Value("${nexus.conversation.streaming.timeout:2m}")
-            Duration timeout
+            Duration timeout,
+            ConversationTurnSseMetrics metrics
     ) {
         this.service = Objects.requireNonNull(
                 service,
@@ -55,6 +57,10 @@ public class ConversationTurnStreamController {
                 timeout,
                 "timeout must not be null"
         );
+        this.metrics = Objects.requireNonNull(
+                metrics,
+                "metrics must not be null"
+        );
 
         if (timeout.isNegative() || timeout.isZero()) {
             throw new IllegalArgumentException(
@@ -64,12 +70,12 @@ public class ConversationTurnStreamController {
     }
 
     @PostMapping(
-            value = "/{conversationId}/turns:stream",
+            value = "/{id}/turns:stream",
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.TEXT_EVENT_STREAM_VALUE
     )
     public SseEmitter stream(
-            @PathVariable String conversationId,
+            @PathVariable("id") String conversationId,
             @Valid @RequestBody
             StreamConversationTurnRequest request
     ) {
@@ -77,7 +83,10 @@ public class ConversationTurnStreamController {
                 new SseEmitter(timeout.toMillis());
 
         ConversationTurnSseEventWriter writer =
-                new ConversationTurnSseEventWriter(emitter);
+                new ConversationTurnSseEventWriter(
+                        emitter,
+                        metrics
+                );
 
         Future<?> future;
         try {
@@ -90,18 +99,25 @@ public class ConversationTurnStreamController {
                     )
             );
         } catch (TaskRejectedException rejection) {
+            metrics.countCapacityRejected();
             throw new ConversationTurnCapacityExceededException(
                     rejection
             );
         }
 
+        // submit 成功后才标记接受：即使 direct executor 让
+        // worker 在 submit 返回前已结束，writer 也会先
+        // established 再补结算 pending 终态，active 不泄漏。
+        // reject 路径绝不会调用 markAccepted()。
+        writer.markAccepted();
+
         emitter.onTimeout(() -> {
-            writer.markTransportClosed();
+            writer.markTimeout();
             future.cancel(true);
         });
 
         emitter.onError(error -> {
-            writer.markTransportClosed();
+            writer.markClientDisconnected();
             future.cancel(true);
         });
 
