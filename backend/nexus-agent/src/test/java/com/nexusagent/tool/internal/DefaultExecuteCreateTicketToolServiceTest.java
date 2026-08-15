@@ -2,10 +2,12 @@ package com.nexusagent.tool.internal;
 
 import com.nexusagent.ticket.domain.TicketPriority;
 import com.nexusagent.ticket.domain.TicketStatus;
+import com.nexusagent.testing.ThrowingMeterRegistry;
 import com.nexusagent.tool.api.ToolExecutionApprovalRequiredException;
 import com.nexusagent.tool.api.ToolExecutionInProgressException;
 import com.nexusagent.tool.api.ToolExecutionNotFoundException;
 import com.nexusagent.tool.api.ToolExecutionTerminalStateException;
+import io.micrometer.core.instrument.Counter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -49,13 +51,17 @@ class DefaultExecuteCreateTicketToolServiceTest {
     @Mock
     private CreateTicketToolExecutionTransactions transactions;
 
+    private final ThrowingMeterRegistry meterRegistry =
+            new ThrowingMeterRegistry();
+
     private DefaultExecuteCreateTicketToolService service;
 
     @BeforeEach
     void setUp() {
         service = new DefaultExecuteCreateTicketToolService(
                 transactions,
-                Clock.fixed(NOW, ZoneOffset.UTC)
+                Clock.fixed(NOW, ZoneOffset.UTC),
+                new ToolExecutionMetrics(meterRegistry)
         );
     }
 
@@ -133,6 +139,252 @@ class DefaultExecuteCreateTicketToolServiceTest {
 
         assertSame(expected, result);
 
+        verify(transactions, never()).fail(
+                any(),
+                any()
+        );
+    }
+
+    @Test
+    void shouldReturnSucceededResultWhenMetricsFail() {
+        // succeed 已提交成功；指标异常必须被吞掉，
+        // 绝不能向调用方报告失败或把 execution 补偿为 FAILED。
+        meterRegistry.throwOnCounterCreation();
+
+        ClaimedCreateTicketToolExecution claim =
+                new ClaimedCreateTicketToolExecution(
+                        context(),
+                        arguments(),
+                        NOW,
+                        null
+                );
+
+        ExecuteCreateTicketToolResult expected =
+                new ExecuteCreateTicketToolResult(
+                        TOOL_EXECUTION_ID,
+                        "9001",
+                        "TKT-A1",
+                        TicketStatus.OPEN,
+                        TOOL_MESSAGE_ID,
+                        3L,
+                        FINAL_ASSISTANT_MESSAGE_ID,
+                        4L,
+                        2,
+                        NOW,
+                        false
+                );
+
+        when(transactions.claim(context()))
+                .thenReturn(claim);
+        when(transactions.succeed(claim))
+                .thenReturn(expected);
+
+        ExecuteCreateTicketToolResult result =
+                service.execute(context());
+
+        assertSame(expected, result);
+
+        verify(transactions, never()).fail(
+                any(),
+                any()
+        );
+    }
+
+    @Test
+    void shouldReturnReplayResultWhenMetricsFail() {
+        // 幂等重放结果绝不能因指标异常改变或抛错。
+        meterRegistry.throwOnCounterCreation();
+
+        ExecuteCreateTicketToolResult replay =
+                new ExecuteCreateTicketToolResult(
+                        TOOL_EXECUTION_ID,
+                        "9001",
+                        "TKT-A1",
+                        TicketStatus.OPEN,
+                        TOOL_MESSAGE_ID,
+                        3L,
+                        FINAL_ASSISTANT_MESSAGE_ID,
+                        4L,
+                        2,
+                        NOW,
+                        true
+                );
+
+        ClaimedCreateTicketToolExecution replayClaim =
+                ClaimedCreateTicketToolExecution.replay(
+                        context(),
+                        NOW,
+                        replay
+                );
+
+        when(transactions.claim(context()))
+                .thenReturn(replayClaim);
+
+        ExecuteCreateTicketToolResult result =
+                service.execute(context());
+
+        assertSame(replay, result);
+
+        verify(transactions, never()).succeed(any());
+        verify(transactions, never()).fail(
+                any(),
+                any()
+        );
+    }
+
+    @Test
+    void shouldCountSucceededOutcomeForFreshExecution() {
+        ClaimedCreateTicketToolExecution claim =
+                new ClaimedCreateTicketToolExecution(
+                        context(),
+                        arguments(),
+                        NOW,
+                        null
+                );
+
+        ExecuteCreateTicketToolResult expected =
+                new ExecuteCreateTicketToolResult(
+                        TOOL_EXECUTION_ID,
+                        "9001",
+                        "TKT-A1",
+                        TicketStatus.OPEN,
+                        TOOL_MESSAGE_ID,
+                        3L,
+                        FINAL_ASSISTANT_MESSAGE_ID,
+                        4L,
+                        2,
+                        NOW,
+                        false
+                );
+
+        when(transactions.claim(context()))
+                .thenReturn(claim);
+        when(transactions.succeed(claim))
+                .thenReturn(expected);
+
+        service.execute(context());
+
+        assertEquals(
+                1.0,
+                outcomeCount(
+                        ToolExecutionMetrics.OUTCOME_SUCCEEDED,
+                        false
+                )
+        );
+        assertEquals(
+                0.0,
+                outcomeCount(
+                        ToolExecutionMetrics.OUTCOME_REPLAYED,
+                        true
+                )
+        );
+    }
+
+    @Test
+    void shouldCountReplayedNotSucceededOnReplay() {
+        ExecuteCreateTicketToolResult replay =
+                new ExecuteCreateTicketToolResult(
+                        TOOL_EXECUTION_ID,
+                        "9001",
+                        "TKT-A1",
+                        TicketStatus.OPEN,
+                        TOOL_MESSAGE_ID,
+                        3L,
+                        FINAL_ASSISTANT_MESSAGE_ID,
+                        4L,
+                        2,
+                        NOW,
+                        true
+                );
+
+        ClaimedCreateTicketToolExecution replayClaim =
+                ClaimedCreateTicketToolExecution.replay(
+                        context(),
+                        NOW,
+                        replay
+                );
+
+        when(transactions.claim(context()))
+                .thenReturn(replayClaim);
+
+        service.execute(context());
+
+        // 幂等重放绝不统计成第二次业务成功。
+        assertEquals(
+                1.0,
+                outcomeCount(
+                        ToolExecutionMetrics.OUTCOME_REPLAYED,
+                        true
+                )
+        );
+        assertEquals(
+                0.0,
+                outcomeCount(
+                        ToolExecutionMetrics.OUTCOME_SUCCEEDED,
+                        false
+                )
+        );
+
+        verify(transactions, never()).succeed(any());
+    }
+
+    @Test
+    void shouldCountFailedOutcomeOnExecutionFailure() {
+        ClaimedCreateTicketToolExecution claim =
+                new ClaimedCreateTicketToolExecution(
+                        context(),
+                        arguments(),
+                        NOW,
+                        null
+                );
+
+        when(transactions.claim(context()))
+                .thenReturn(claim);
+        when(transactions.succeed(claim))
+                .thenThrow(new IllegalStateException(
+                        "execution boom"
+                ));
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> service.execute(context())
+        );
+
+        assertEquals(
+                1.0,
+                outcomeCount(
+                        ToolExecutionMetrics.OUTCOME_FAILED,
+                        false
+                )
+        );
+        assertEquals(
+                0.0,
+                outcomeCount(
+                        ToolExecutionMetrics.OUTCOME_SUCCEEDED,
+                        false
+                )
+        );
+    }
+
+    @Test
+    void shouldCountInProgressOutcome() {
+        when(transactions.claim(context()))
+                .thenThrow(new ToolExecutionInProgressException());
+
+        assertThrows(
+                ToolExecutionInProgressException.class,
+                () -> service.execute(context())
+        );
+
+        assertEquals(
+                1.0,
+                outcomeCount(
+                        ToolExecutionMetrics.OUTCOME_IN_PROGRESS,
+                        false
+                )
+        );
+
+        // IN_PROGRESS 不是失败，不应触发 failPending。
         verify(transactions, never()).fail(
                 any(),
                 any()
@@ -552,6 +804,30 @@ class DefaultExecuteCreateTicketToolServiceTest {
                 any(),
                 any()
         );
+    }
+
+    private double outcomeCount(
+            String outcome,
+            boolean replayed
+    ) {
+        Counter counter = meterRegistry.find(
+                        ToolExecutionMetrics.METRIC_NAME
+                )
+                .tag(
+                        ToolExecutionMetrics.TAG_TOOL,
+                        ToolExecutionMetrics.TOOL_CREATE_TICKET
+                )
+                .tag(
+                        ToolExecutionMetrics.TAG_REPLAYED,
+                        Boolean.toString(replayed)
+                )
+                .tag(
+                        ToolExecutionMetrics.TAG_OUTCOME,
+                        outcome
+                )
+                .counter();
+
+        return counter == null ? 0.0 : counter.count();
     }
 
     private static AgentToolExecutionContext context() {

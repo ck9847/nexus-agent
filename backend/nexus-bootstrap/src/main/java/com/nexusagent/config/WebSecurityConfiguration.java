@@ -36,6 +36,9 @@ public class WebSecurityConfiguration {
                                 "/actuator/info"
                         ).permitAll()
                         .requestMatchers(
+                                "/actuator/prometheus"
+                        ).hasRole("ADMIN")
+                        .requestMatchers(
                                 HttpMethod.POST,
                                 "/api/v1/conversations",
                                 "/api/v1/conversations/*/messages",

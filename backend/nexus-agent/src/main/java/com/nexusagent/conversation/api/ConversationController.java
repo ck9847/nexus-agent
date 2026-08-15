@@ -54,10 +54,10 @@ public class ConversationController {
                 .body(response);
     }
 
-    @PostMapping("/{conversationId}/messages")
+    @PostMapping("/{id}/messages")
     public ResponseEntity<AppendUserMessageResponse>
     appendUserMessage(
-            @PathVariable String conversationId,
+            @PathVariable("id") String conversationId,
             @Valid @RequestBody
             AppendUserMessageRequest request
     ) {
@@ -72,10 +72,10 @@ public class ConversationController {
                 .body(response);
     }
 
-    @GetMapping("/{conversationId}")
+    @GetMapping("/{id}")
     public ResponseEntity<ConversationDetailResponse>
     getConversation(
-            @PathVariable String conversationId
+            @PathVariable("id") String conversationId
     ) {
         ConversationDetailResponse response =
                 conversationQueryService.getById(
@@ -85,10 +85,10 @@ public class ConversationController {
         return ResponseEntity.ok(response);
     }
 
-    @GetMapping("/{conversationId}/messages")
+    @GetMapping("/{id}/messages")
     public ResponseEntity<ConversationMessagesResponse>
     listMessages(
-            @PathVariable String conversationId,
+            @PathVariable("id") String conversationId,
             @RequestParam(
                     defaultValue = "20"
             )

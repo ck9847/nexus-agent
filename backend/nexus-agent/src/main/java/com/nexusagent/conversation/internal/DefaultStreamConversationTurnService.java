@@ -2,6 +2,7 @@ package com.nexusagent.conversation.internal;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nexusagent.agent.api.ActiveAgentRuntime;
+import com.nexusagent.agent.domain.AgentModelProvider;
 import com.nexusagent.conversation.api.ConversationTurnStreamEvent;
 import com.nexusagent.conversation.api.ConversationTurnStreamHandler;
 import com.nexusagent.conversation.api.StreamConversationTurnService;
@@ -66,6 +67,7 @@ public class DefaultStreamConversationTurnService
             toolExecutionService;
     private final PrepareConversationToolContinuationService
             continuationService;
+    private final ConversationTurnMetrics turnMetrics;
 
     public DefaultStreamConversationTurnService(
             PrepareConversationTurnService prepareService,
@@ -80,7 +82,8 @@ public class DefaultStreamConversationTurnService
                     completeToolCallService,
             CreateTicketToolExecutionService toolExecutionService,
             PrepareConversationToolContinuationService
-                    continuationService
+                    continuationService,
+            ConversationTurnMetrics turnMetrics
     ) {
         this.prepareService = Objects.requireNonNull(
                 prepareService,
@@ -122,6 +125,10 @@ public class DefaultStreamConversationTurnService
                 continuationService,
                 "continuationService must not be null"
         );
+        this.turnMetrics = Objects.requireNonNull(
+                turnMetrics,
+                "turnMetrics must not be null"
+        );
     }
 
     @Override
@@ -136,6 +143,35 @@ public class DefaultStreamConversationTurnService
                 "handler must not be null"
         );
 
+        // Timer 使用注册表的单调时钟（System.nanoTime 语义），
+        // 绝不使用 Instant 计算耗时。启动失败时退化为 no-op 观察；
+        // stop 的指标异常在 ConversationTurnMetrics 内部吞掉，
+        // 绝不能把成功 turn 变成失败或覆盖模型异常。
+        ConversationTurnMetrics.Sample sample =
+                turnMetrics.startTimer();
+        TurnOutcome outcome = new TurnOutcome();
+
+        try {
+            runTurn(conversationId, content, handler, outcome);
+        } finally {
+            // 每个 turn 只结束一次：无论成功、异常还是
+            // failService 再失败，最终 outcome 只记录一次。
+            sample.stop(
+                    ConversationTurnMetrics.TURN_DURATION_METRIC,
+                    ConversationTurnMetrics.TAG_OUTCOME,
+                    outcome.orDefault(
+                            ConversationTurnOutcome.INTERNAL_FAILED
+                    ).name()
+            );
+        }
+    }
+
+    private void runTurn(
+            String conversationId,
+            String content,
+            ConversationTurnStreamHandler handler,
+            TurnOutcome outcome
+    ) {
         PreparedConversationTurn prepared =
                 prepareService.prepare(
                         conversationId,
@@ -149,13 +185,14 @@ public class DefaultStreamConversationTurnService
             firstCompletion = invokeFirstModel(prepared, handler);
             requireActiveConsumer(handler);
         } catch (ChatModelException failure) {
+            outcome.set(classifyModelFailure(failure));
             markFailed(prepared, failure);
             throw failure;
         }
 
         if (firstCompletion
                 instanceof ConversationTurnModelCompletion.Text text) {
-            completeTextRound(prepared, text, handler);
+            completeTextRound(prepared, text, handler, outcome);
             return;
         }
 
@@ -163,14 +200,16 @@ public class DefaultStreamConversationTurnService
                 prepared,
                 (ConversationTurnModelCompletion.ToolCall)
                         firstCompletion,
-                handler
+                handler,
+                outcome
         );
     }
 
     private void completeTextRound(
             PreparedConversationTurn prepared,
             ConversationTurnModelCompletion.Text text,
-            ConversationTurnStreamHandler handler
+            ConversationTurnStreamHandler handler,
+            TurnOutcome outcome
     ) {
         CompletedConversationTurn completed =
                 completeService.complete(
@@ -185,12 +224,17 @@ public class DefaultStreamConversationTurnService
                 prepared,
                 completed
         ));
+
+        // completeService 失败会抛出异常，不会走到这里；
+        // 因此完成事务失败不会被误记为成功。
+        outcome.set(ConversationTurnOutcome.COMPLETED_TEXT);
     }
 
     private void completeToolRound(
             PreparedConversationTurn prepared,
             ConversationTurnModelCompletion.ToolCall toolCompletion,
-            ConversationTurnStreamHandler handler
+            ConversationTurnStreamHandler handler,
+            TurnOutcome outcome
     ) {
         ChatModelToolCall call = toolCompletion.call();
 
@@ -211,6 +255,7 @@ public class DefaultStreamConversationTurnService
                             )
                     );
         } catch (RuntimeException registrationFailure) {
+            outcome.set(ConversationTurnOutcome.TOOL_FAILED);
             markFailed(
                     prepared,
                     toModelFailure(registrationFailure)
@@ -239,6 +284,7 @@ public class DefaultStreamConversationTurnService
                     registration.toolExecutionId()
             );
         } catch (RuntimeException completionFailure) {
+            outcome.set(ConversationTurnOutcome.TOOL_FAILED);
             compensateCompletedToolCallFailure(
                     prepared,
                     context,
@@ -251,6 +297,9 @@ public class DefaultStreamConversationTurnService
         try {
             requireActiveConsumer(handler);
         } catch (ChatModelException cancelled) {
+            outcome.set(
+                    ConversationTurnOutcome.CLIENT_DISCONNECTED
+            );
             toolExecutionService.failPending(
                     context,
                     cancelled
@@ -265,6 +314,7 @@ public class DefaultStreamConversationTurnService
         } catch (RuntimeException executionFailure) {
             // 执行服务已经自行把 execution 补偿为 FAILED；
             // 首轮 ASSISTANT 已是 COMPLETED，不能再调用 failService。
+            outcome.set(ConversationTurnOutcome.TOOL_FAILED);
             throw executionFailure;
         }
 
@@ -289,6 +339,7 @@ public class DefaultStreamConversationTurnService
                     toolResult
             );
         } catch (RuntimeException continuationFailure) {
+            outcome.set(ConversationTurnOutcome.TOOL_FAILED);
             markFailed(
                     continuationTarget,
                     toModelFailure(continuationFailure)
@@ -297,12 +348,17 @@ public class DefaultStreamConversationTurnService
             throw continuationFailure;
         }
 
-        completeContinuationRound(continuation, handler);
+        completeContinuationRound(
+                continuation,
+                handler,
+                outcome
+        );
     }
 
     private void completeContinuationRound(
             PreparedConversationToolContinuation continuation,
-            ConversationTurnStreamHandler handler
+            ConversationTurnStreamHandler handler,
+            TurnOutcome outcome
     ) {
         TextCompletion secondCompletion;
 
@@ -315,6 +371,7 @@ public class DefaultStreamConversationTurnService
             );
             requireActiveConsumer(handler);
         } catch (ChatModelException failure) {
+            outcome.set(classifyModelFailure(failure));
             markFailed(continuation, failure);
             throw failure;
         }
@@ -333,6 +390,9 @@ public class DefaultStreamConversationTurnService
                 continuation,
                 completed
         ));
+
+        // completeService 失败会抛出异常，不会走到这里。
+        outcome.set(ConversationTurnOutcome.COMPLETED_TOOL);
     }
 
     private void compensateCompletedToolCallFailure(
@@ -366,10 +426,15 @@ public class DefaultStreamConversationTurnService
             PreparedConversationTurn prepared,
             ConversationTurnStreamHandler handler
     ) {
+        AgentModelProvider provider =
+                prepared.agent().modelProvider();
+        ConversationTurnMetrics.Sample sample =
+                turnMetrics.startTimer();
+
         try {
             ChatModelGateway gateway =
                     gatewayResolver.requireGateway(
-                            prepared.agent().modelProvider()
+                            provider
                     );
 
             ChatModelRequest original =
@@ -392,8 +457,18 @@ public class DefaultStreamConversationTurnService
 
             gateway.stream(firstRequest, accumulator);
 
-            return accumulator.requireCompletion();
+            ConversationTurnModelCompletion completion =
+                    accumulator.requireCompletion();
+
+            stopModelCallSuccess(sample, provider);
+
+            return completion;
         } catch (ConversationTurnStreamConsumerException exception) {
+            stopModelCallFailure(
+                    sample,
+                    provider,
+                    ChatModelErrorCategory.STREAM_INTERRUPTED
+            );
             throw new ChatModelException(
                     ChatModelErrorCategory.STREAM_INTERRUPTED,
                     STREAM_DELIVERY_FAILED_MESSAGE,
@@ -401,8 +476,18 @@ public class DefaultStreamConversationTurnService
                     exception.getCause()
             );
         } catch (ChatModelException exception) {
+            stopModelCallFailure(
+                    sample,
+                    provider,
+                    exception.category()
+            );
             throw exception;
         } catch (RuntimeException exception) {
+            stopModelCallFailure(
+                    sample,
+                    provider,
+                    ChatModelErrorCategory.MALFORMED_RESPONSE
+            );
             throw new ChatModelException(
                     ChatModelErrorCategory.MALFORMED_RESPONSE,
                     GATEWAY_FAILED_MESSAGE,
@@ -417,10 +502,15 @@ public class DefaultStreamConversationTurnService
             ActiveAgentRuntime agent,
             ConversationTurnStreamHandler handler
     ) {
+        AgentModelProvider provider =
+                agent.modelProvider();
+        ConversationTurnMetrics.Sample sample =
+                turnMetrics.startTimer();
+
         try {
             ChatModelGateway gateway =
                     gatewayResolver.requireGateway(
-                            agent.modelProvider()
+                            provider
                     );
 
             ConversationTurnTextStreamAccumulator accumulator =
@@ -428,8 +518,18 @@ public class DefaultStreamConversationTurnService
 
             gateway.stream(request, accumulator);
 
-            return accumulator.requireCompletion();
+            TextCompletion completion =
+                    accumulator.requireCompletion();
+
+            stopModelCallSuccess(sample, provider);
+
+            return completion;
         } catch (ConversationTurnStreamConsumerException exception) {
+            stopModelCallFailure(
+                    sample,
+                    provider,
+                    ChatModelErrorCategory.STREAM_INTERRUPTED
+            );
             throw new ChatModelException(
                     ChatModelErrorCategory.STREAM_INTERRUPTED,
                     STREAM_DELIVERY_FAILED_MESSAGE,
@@ -437,8 +537,18 @@ public class DefaultStreamConversationTurnService
                     exception.getCause()
             );
         } catch (ChatModelException exception) {
+            stopModelCallFailure(
+                    sample,
+                    provider,
+                    exception.category()
+            );
             throw exception;
         } catch (RuntimeException exception) {
+            stopModelCallFailure(
+                    sample,
+                    provider,
+                    ChatModelErrorCategory.MALFORMED_RESPONSE
+            );
             throw new ChatModelException(
                     ChatModelErrorCategory.MALFORMED_RESPONSE,
                     GATEWAY_FAILED_MESSAGE,
@@ -446,6 +556,50 @@ public class DefaultStreamConversationTurnService
                     exception
             );
         }
+    }
+
+    /**
+     * 记录一次成功的模型调用。
+     *
+     * <p>标签保持低基数：provider、outcome=success、
+     * error_category=NONE。绝不携带 modelName 等。
+     */
+    private void stopModelCallSuccess(
+            ConversationTurnMetrics.Sample sample,
+            AgentModelProvider provider
+    ) {
+        sample.stop(
+                ConversationTurnMetrics.MODEL_CALL_METRIC,
+                ConversationTurnMetrics.TAG_OUTCOME,
+                ConversationTurnMetrics.OUTCOME_SUCCESS,
+                ConversationTurnMetrics.TAG_PROVIDER,
+                provider.name(),
+                ConversationTurnMetrics.TAG_ERROR_CATEGORY,
+                ConversationTurnMetrics.ERROR_CATEGORY_NONE
+        );
+    }
+
+    /**
+     * 记录一次失败的模型调用。
+     *
+     * <p>{@link ConversationTurnMetrics.Sample#stop(String, String...)}
+     * 内部吞掉所有指标异常：这里绝不抛错，因此正在传播的
+     * 原始模型异常永远不会被指标异常覆盖。
+     */
+    private void stopModelCallFailure(
+            ConversationTurnMetrics.Sample sample,
+            AgentModelProvider provider,
+            ChatModelErrorCategory category
+    ) {
+        sample.stop(
+                ConversationTurnMetrics.MODEL_CALL_METRIC,
+                ConversationTurnMetrics.TAG_OUTCOME,
+                ConversationTurnMetrics.OUTCOME_FAILURE,
+                ConversationTurnMetrics.TAG_PROVIDER,
+                provider.name(),
+                ConversationTurnMetrics.TAG_ERROR_CATEGORY,
+                ConversationTurnMetrics.errorCategoryTag(category)
+        );
     }
 
     private void emitStarted(
@@ -521,6 +675,36 @@ public class DefaultStreamConversationTurnService
                 null,
                 failure
         );
+    }
+
+    private static ConversationTurnOutcome classifyModelFailure(
+            ChatModelException failure
+    ) {
+        if (failure.category()
+                == ChatModelErrorCategory.STREAM_INTERRUPTED) {
+            return ConversationTurnOutcome.CLIENT_DISCONNECTED;
+        }
+
+        return ConversationTurnOutcome.MODEL_FAILED;
+    }
+
+    /**
+     * 单个 turn 的 outcome 槽位：由各分支写入，
+     * 由 {@code stream} 的 finally 一次性记录。
+     */
+    private static final class TurnOutcome {
+
+        private ConversationTurnOutcome value;
+
+        void set(ConversationTurnOutcome outcome) {
+            value = outcome;
+        }
+
+        ConversationTurnOutcome orDefault(
+                ConversationTurnOutcome fallback
+        ) {
+            return value != null ? value : fallback;
+        }
     }
 
     /**

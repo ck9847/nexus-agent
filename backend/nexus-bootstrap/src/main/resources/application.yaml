@@ -20,6 +20,10 @@ spring:
   jackson:
     time-zone: UTC
 
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] [%X{requestId:-}|%X{traceId:-}] %logger{40} - %msg%n"
+
 mybatis:
   configuration:
     map-underscore-to-camel-case: true
@@ -32,7 +36,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus
 
   endpoint:
     health:
