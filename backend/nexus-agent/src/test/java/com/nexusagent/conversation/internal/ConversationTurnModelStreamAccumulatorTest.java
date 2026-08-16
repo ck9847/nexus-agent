@@ -7,6 +7,7 @@ import com.nexusagent.conversation.api.ConversationTurnStreamEvent;
 import com.nexusagent.model.api.ChatModelErrorCategory;
 import com.nexusagent.model.api.ChatModelException;
 import com.nexusagent.model.api.ChatModelFinishReason;
+import com.nexusagent.model.api.ChatModelStreamConsumerException;
 import com.nexusagent.model.api.ChatModelStreamEvent;
 import com.nexusagent.model.api.ChatTokenUsage;
 import org.junit.jupiter.api.BeforeEach;
@@ -412,9 +413,9 @@ class ConversationTurnModelStreamAccumulatorTest {
                         }
                 );
 
-        ConversationTurnStreamConsumerException thrown =
+        ChatModelStreamConsumerException thrown =
                 assertThrows(
-                        ConversationTurnStreamConsumerException.class,
+                        ChatModelStreamConsumerException.class,
                         () -> failing.onEvent(
                                 new ChatModelStreamEvent.TextDelta("Hi")
                         )

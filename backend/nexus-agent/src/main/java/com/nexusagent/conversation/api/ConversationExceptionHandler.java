@@ -3,6 +3,7 @@ package com.nexusagent.conversation.api;
 import com.nexusagent.agent.api.AgentNotFoundException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -187,6 +188,40 @@ public class ConversationExceptionHandler {
         );
 
         return problem;
+    }
+
+    @ExceptionHandler(
+            ConversationTurnRateLimitedException.class
+    )
+    public ResponseEntity<ProblemDetail>
+    handleTurnRateLimited(
+            ConversationTurnRateLimitedException exception
+    ) {
+        ProblemDetail problem =
+                ProblemDetail.forStatusAndDetail(
+                        HttpStatus.TOO_MANY_REQUESTS,
+                        "Conversation turn rate limit "
+                                + "exceeded"
+                );
+
+        problem.setTitle(
+                "Conversation turn rate limited"
+        );
+        problem.setProperty(
+                "errorCode",
+                "CONVERSATION_TURN_RATE_LIMITED"
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(
+                        "Retry-After",
+                        Long.toString(
+                                exception.retryAfter()
+                                        .toSeconds()
+                        )
+                )
+                .body(problem);
     }
 
     @ExceptionHandler(

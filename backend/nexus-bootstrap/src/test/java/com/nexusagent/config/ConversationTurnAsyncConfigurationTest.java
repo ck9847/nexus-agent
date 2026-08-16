@@ -1,6 +1,8 @@
 package com.nexusagent.config;
 
+import com.nexusagent.conversation.internal.ConversationTurnMetrics;
 import com.nexusagent.observability.RequestCorrelationTaskDecorator;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.task.AsyncTaskExecutor;
@@ -50,6 +52,12 @@ class ConversationTurnAsyncConfigurationTest {
     private final ConversationTurnAsyncConfiguration configuration =
             new ConversationTurnAsyncConfiguration();
 
+    private static ConversationTurnMetrics turnMetrics() {
+        return new ConversationTurnMetrics(
+                new SimpleMeterRegistry()
+        );
+    }
+
     @AfterEach
     void clearSecurityContext() {
         SecurityContextHolder.clearContext();
@@ -60,7 +68,8 @@ class ConversationTurnAsyncConfigurationTest {
         ThreadPoolTaskExecutor executor =
                 configuration.conversationTurnWorkerExecutor(
                         properties(4, 16, 100),
-                        new RequestCorrelationTaskDecorator()
+                        new RequestCorrelationTaskDecorator(),
+                        turnMetrics()
                 );
 
         assertEquals(4, executor.getCorePoolSize());
@@ -92,19 +101,41 @@ class ConversationTurnAsyncConfigurationTest {
         ThreadPoolTaskExecutor executor =
                 configuration.conversationTurnWorkerExecutor(
                         properties(4, 16, 100),
-                        new RequestCorrelationTaskDecorator()
+                        new RequestCorrelationTaskDecorator(),
+                        turnMetrics()
                 );
 
         try {
+            // 装饰器是 CompositeTaskDecorator：外层排队计时、
+            // 内层请求关联传播。
             Object decorator = readTaskDecorator(executor);
 
             assertInstanceOf(
-                    RequestCorrelationTaskDecorator.class,
+                    ConversationTurnAsyncConfiguration
+                            .CompositeTaskDecorator.class,
                     decorator
+            );
+
+            Object inner = compositeInner(decorator);
+
+            assertInstanceOf(
+                    RequestCorrelationTaskDecorator.class,
+                    inner
             );
         } finally {
             executor.shutdown();
         }
+    }
+
+    private static Object compositeInner(Object composite)
+            throws Exception {
+        java.lang.reflect.Field field =
+                composite.getClass()
+                        .getDeclaredField("inner");
+
+        field.setAccessible(true);
+
+        return field.get(composite);
     }
 
     @Test
@@ -351,7 +382,8 @@ class ConversationTurnAsyncConfigurationTest {
             this.worker =
                     configuration.conversationTurnWorkerExecutor(
                             properties(core, max, queue),
-                            new RequestCorrelationTaskDecorator()
+                            new RequestCorrelationTaskDecorator(),
+                            turnMetrics()
                     );
             this.worker.afterPropertiesSet();
 

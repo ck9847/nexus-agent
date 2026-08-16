@@ -42,3 +42,6 @@ Thumbs.db
 .claude/
 # Local agent workspace
 .zcode/
+
+# Load-test run artifacts (summaries/logs)
+loadtest/results/

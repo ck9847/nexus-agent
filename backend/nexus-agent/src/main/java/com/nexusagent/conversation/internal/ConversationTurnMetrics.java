@@ -32,8 +32,14 @@ public final class ConversationTurnMetrics {
     public static final String TURN_DURATION_METRIC =
             "nexus.conversation.turn";
 
+    public static final String QUEUE_WAIT_METRIC =
+            "nexus.conversation.turn.queue.wait";
+
     public static final String MODEL_CALL_METRIC =
             "nexus.model.call";
+
+    public static final String MODEL_RETRY_METRIC =
+            "nexus.model.retry";
 
     public static final String TAG_OUTCOME = "outcome";
     public static final String TAG_PROVIDER = "provider";
@@ -42,6 +48,15 @@ public final class ConversationTurnMetrics {
 
     public static final String OUTCOME_SUCCESS = "success";
     public static final String OUTCOME_FAILURE = "failure";
+
+    public static final String RETRY_OUTCOME_ATTEMPTED =
+            "attempted";
+    public static final String RETRY_OUTCOME_SUCCEEDED =
+            "succeeded";
+    public static final String RETRY_OUTCOME_EXHAUSTED =
+            "exhausted";
+    public static final String RETRY_OUTCOME_BLOCKED =
+            "blocked_by_first_event";
 
     public static final String ERROR_CATEGORY_NONE = "NONE";
     public static final String ERROR_CATEGORY_RATE_LIMIT =
@@ -56,6 +71,8 @@ public final class ConversationTurnMetrics {
             "MALFORMED_RESPONSE";
     public static final String ERROR_CATEGORY_STREAM_INTERRUPTED =
             "STREAM_INTERRUPTED";
+    public static final String ERROR_CATEGORY_CIRCUIT_OPEN =
+            "CIRCUIT_OPEN";
 
     private final MeterRegistry registry;
 
@@ -144,6 +161,32 @@ public final class ConversationTurnMetrics {
     }
 
     /**
+     * 安全记录一次模型重试结果
+     * （outcome ∈ attempted/succeeded/exhausted/blocked）。
+     */
+    public void incrementModelRetry(
+            AgentModelProvider provider,
+            String outcome
+    ) {
+        Objects.requireNonNull(
+                provider,
+                "provider must not be null"
+        );
+        Objects.requireNonNull(
+                outcome,
+                "outcome must not be null"
+        );
+
+        incrementCounter(
+                MODEL_RETRY_METRIC,
+                TAG_PROVIDER,
+                provider.name(),
+                TAG_OUTCOME,
+                outcome
+        );
+    }
+
+    /**
      * 把内部错误分类折叠成低基数 {@code error_category} 标签。
      *
      * <p>折叠规则：
@@ -170,6 +213,8 @@ public final class ConversationTurnMetrics {
                     ERROR_CATEGORY_RATE_LIMIT;
             case TIMEOUT ->
                     ERROR_CATEGORY_TIMEOUT;
+            case CIRCUIT_OPEN ->
+                    ERROR_CATEGORY_CIRCUIT_OPEN;
             case STREAM_INTERRUPTED ->
                     ERROR_CATEGORY_STREAM_INTERRUPTED;
             case CONNECTION,

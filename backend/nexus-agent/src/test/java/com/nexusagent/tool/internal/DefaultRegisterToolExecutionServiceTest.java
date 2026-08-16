@@ -991,7 +991,8 @@ class DefaultRegisterToolExecutionServiceTest {
                 OBJECT_MAPPER.createObjectNode()
                         .put("query", "latest"),
                 approvalRequired,
-                "trace-1"
+                "trace-1",
+                null
         );
     }
 
@@ -1007,7 +1008,8 @@ class DefaultRegisterToolExecutionServiceTest {
                 OBJECT_MAPPER.createObjectNode()
                         .put("query", "latest"),
                 false,
-                traceId
+                traceId,
+                null
         );
     }
 

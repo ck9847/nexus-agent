@@ -12,6 +12,7 @@ import com.nexusagent.model.api.ChatModelException;
 import com.nexusagent.model.api.ChatModelGateway;
 import com.nexusagent.model.api.ChatModelGatewayResolver;
 import com.nexusagent.model.api.ChatModelRequest;
+import com.nexusagent.model.api.ChatModelStreamConsumerException;
 import com.nexusagent.model.api.ChatModelToolCall;
 import com.nexusagent.tool.api.RegisterToolExecutionCommand;
 import com.nexusagent.tool.api.RegisterToolExecutionResult;
@@ -68,6 +69,7 @@ public class DefaultStreamConversationTurnService
     private final PrepareConversationToolContinuationService
             continuationService;
     private final ConversationTurnMetrics turnMetrics;
+    private final SafeModelRetryExecutor modelRetry;
 
     public DefaultStreamConversationTurnService(
             PrepareConversationTurnService prepareService,
@@ -83,7 +85,8 @@ public class DefaultStreamConversationTurnService
             CreateTicketToolExecutionService toolExecutionService,
             PrepareConversationToolContinuationService
                     continuationService,
-            ConversationTurnMetrics turnMetrics
+            ConversationTurnMetrics turnMetrics,
+            SafeModelRetryExecutor modelRetry
     ) {
         this.prepareService = Objects.requireNonNull(
                 prepareService,
@@ -129,6 +132,10 @@ public class DefaultStreamConversationTurnService
                 turnMetrics,
                 "turnMetrics must not be null"
         );
+        this.modelRetry = Objects.requireNonNull(
+                modelRetry,
+                "modelRetry must not be null"
+        );
     }
 
     @Override
@@ -136,6 +143,7 @@ public class DefaultStreamConversationTurnService
     public void stream(
             String conversationId,
             String content,
+            String idempotencyKey,
             ConversationTurnStreamHandler handler
     ) {
         Objects.requireNonNull(
@@ -152,7 +160,13 @@ public class DefaultStreamConversationTurnService
         TurnOutcome outcome = new TurnOutcome();
 
         try {
-            runTurn(conversationId, content, handler, outcome);
+            runTurn(
+                    conversationId,
+                    content,
+                    idempotencyKey,
+                    handler,
+                    outcome
+            );
         } finally {
             // 每个 turn 只结束一次：无论成功、异常还是
             // failService 再失败，最终 outcome 只记录一次。
@@ -169,6 +183,7 @@ public class DefaultStreamConversationTurnService
     private void runTurn(
             String conversationId,
             String content,
+            String idempotencyKey,
             ConversationTurnStreamHandler handler,
             TurnOutcome outcome
     ) {
@@ -200,6 +215,7 @@ public class DefaultStreamConversationTurnService
                 prepared,
                 (ConversationTurnModelCompletion.ToolCall)
                         firstCompletion,
+                idempotencyKey,
                 handler,
                 outcome
         );
@@ -233,6 +249,7 @@ public class DefaultStreamConversationTurnService
     private void completeToolRound(
             PreparedConversationTurn prepared,
             ConversationTurnModelCompletion.ToolCall toolCompletion,
+            String idempotencyKey,
             ConversationTurnStreamHandler handler,
             TurnOutcome outcome
     ) {
@@ -251,7 +268,8 @@ public class DefaultStreamConversationTurnService
                                     call.name(),
                                     call.arguments(),
                                     false,
-                                    null
+                                    null,
+                                    idempotencyKey
                             )
                     );
         } catch (RuntimeException registrationFailure) {
@@ -428,6 +446,38 @@ public class DefaultStreamConversationTurnService
     ) {
         AgentModelProvider provider =
                 prepared.agent().modelProvider();
+
+        ChatModelRequest original =
+                prepared.modelRequest();
+
+        ChatModelRequest firstRequest =
+                new ChatModelRequest(
+                        original.modelName(),
+                        original.systemPrompt(),
+                        original.options(),
+                        original.messages(),
+                        List.of(createTicketTool.definition())
+                );
+
+        // 安全重试只发生在“尚未向客户端转发任何模型事件”时，
+        // 判定边界见 SafeModelRetryExecutor。
+        return modelRetry.execute(
+                provider,
+                handler,
+                guard -> invokeFirstModelAttempt(
+                        provider,
+                        firstRequest,
+                        guard
+                )
+        );
+    }
+
+    private ConversationTurnModelCompletion
+    invokeFirstModelAttempt(
+            AgentModelProvider provider,
+            ChatModelRequest firstRequest,
+            ConversationTurnStreamHandler guard
+    ) {
         ConversationTurnMetrics.Sample sample =
                 turnMetrics.startTimer();
 
@@ -437,22 +487,10 @@ public class DefaultStreamConversationTurnService
                             provider
                     );
 
-            ChatModelRequest original =
-                    prepared.modelRequest();
-
-            ChatModelRequest firstRequest =
-                    new ChatModelRequest(
-                            original.modelName(),
-                            original.systemPrompt(),
-                            original.options(),
-                            original.messages(),
-                            List.of(createTicketTool.definition())
-                    );
-
             ConversationTurnModelStreamAccumulator accumulator =
                     new ConversationTurnModelStreamAccumulator(
                             objectMapper,
-                            handler
+                            guard
                     );
 
             gateway.stream(firstRequest, accumulator);
@@ -463,7 +501,7 @@ public class DefaultStreamConversationTurnService
             stopModelCallSuccess(sample, provider);
 
             return completion;
-        } catch (ConversationTurnStreamConsumerException exception) {
+        } catch (ChatModelStreamConsumerException exception) {
             stopModelCallFailure(
                     sample,
                     provider,
@@ -504,6 +542,23 @@ public class DefaultStreamConversationTurnService
     ) {
         AgentModelProvider provider =
                 agent.modelProvider();
+
+        return modelRetry.execute(
+                provider,
+                handler,
+                guard -> invokeTextModelAttempt(
+                        provider,
+                        request,
+                        guard
+                )
+        );
+    }
+
+    private TextCompletion invokeTextModelAttempt(
+            AgentModelProvider provider,
+            ChatModelRequest request,
+            ConversationTurnStreamHandler guard
+    ) {
         ConversationTurnMetrics.Sample sample =
                 turnMetrics.startTimer();
 
@@ -514,7 +569,7 @@ public class DefaultStreamConversationTurnService
                     );
 
             ConversationTurnTextStreamAccumulator accumulator =
-                    new ConversationTurnTextStreamAccumulator(handler);
+                    new ConversationTurnTextStreamAccumulator(guard);
 
             gateway.stream(request, accumulator);
 
@@ -524,7 +579,7 @@ public class DefaultStreamConversationTurnService
             stopModelCallSuccess(sample, provider);
 
             return completion;
-        } catch (ConversationTurnStreamConsumerException exception) {
+        } catch (ChatModelStreamConsumerException exception) {
             stopModelCallFailure(
                     sample,
                     provider,

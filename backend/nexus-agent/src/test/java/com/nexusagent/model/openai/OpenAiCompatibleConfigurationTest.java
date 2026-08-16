@@ -5,6 +5,7 @@ import com.nexusagent.agent.domain.AgentModelProvider;
 import com.nexusagent.model.api.ChatModelGateway;
 import com.nexusagent.model.internal.ChatModelGatewayRegistry;
 import com.sun.net.httpserver.HttpServer;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
@@ -27,6 +28,10 @@ class OpenAiCompatibleConfigurationTest {
                             OpenAiCompatibleConfiguration.class,
                             ObjectMapperConfig.class,
                             ChatModelGatewayRegistry.class
+                    )
+                    .withBean(
+                            CircuitBreakerRegistry.class,
+                            CircuitBreakerRegistry::ofDefaults
                     );
 
     @Test

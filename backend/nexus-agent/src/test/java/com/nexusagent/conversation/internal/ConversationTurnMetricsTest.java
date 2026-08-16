@@ -50,7 +50,8 @@ class ConversationTurnMetricsTest {
                 "TIMEOUT",
                 "PROVIDER_ERROR",
                 "MALFORMED_RESPONSE",
-                "STREAM_INTERRUPTED"
+                "STREAM_INTERRUPTED",
+                "CIRCUIT_OPEN"
         )) {
             assertNotNull(
                     registry.find(
@@ -71,7 +72,7 @@ class ConversationTurnMetricsTest {
             );
         }
 
-        assertEquals(7, registry.getMeters().stream()
+        assertEquals(8, registry.getMeters().stream()
                 .filter(meter -> ConversationTurnMetrics
                         .MODEL_CALL_METRIC
                         .equals(meter.getId().getName()))

@@ -1455,7 +1455,8 @@ class CreateTicketToolExecutionIT {
                                 "create_ticket",
                                 input,
                                 approvalRequired,
-                                "trace-" + toolCallId
+                                "trace-" + toolCallId,
+                                null
                         )
                 );
 

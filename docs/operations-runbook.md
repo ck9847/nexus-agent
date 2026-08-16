@@ -222,6 +222,9 @@ max by (instance, pool) (hikaricp_connections_pending)
 | HighConversationTurnFailureRate | warning | MODEL/TOOL/CLIENT/INTERNAL 哪类主导 | [Runbook](runbooks/HighConversationTurnFailureRate.md) |
 | ModelRateLimitSpike | warning | provider 配额还是异常并发 | [Runbook](runbooks/ModelRateLimitSpike.md) |
 | ModelAuthenticationFailure | critical | 密钥过期、撤销还是注入错误 | [Runbook](runbooks/ModelAuthenticationFailure.md) |
+| ModelCircuitOpen | critical | 供应商失败率触发熔断，调用被快速拒绝 | [Runbook](runbooks/ModelCircuitOpen.md) |
+| ModelSafeRetryExhausted | warning | 安全重试耗尽，供应商持续故障 | [Runbook](runbooks/ModelSafeRetryExhausted.md) |
+| ConversationTurnRateLimitedSpike | warning | tenant/user 限流拒绝激增 | [Runbook](runbooks/ConversationTurnRateLimitedSpike.md) |
 | ToolExecutionFailureSpike | warning | FAILED 还是 CONFLICT 主导 | [Runbook](runbooks/ToolExecutionFailureSpike.md) |
 | SseCapacityRejected | warning | worker、queue 还是模型耗时饱和 | [Runbook](runbooks/SseCapacityRejected.md) |
 | SseActiveConnectionLeakSuspected | warning | 活跃连接是否无法随终态回落 | [Runbook](runbooks/SseActiveConnectionLeakSuspected.md) |

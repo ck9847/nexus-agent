@@ -5,6 +5,8 @@ import com.nexusagent.model.api.ChatModelErrorCategory;
 import com.nexusagent.model.api.ChatModelException;
 import com.nexusagent.model.api.ChatModelGateway;
 import com.nexusagent.model.api.ChatModelGatewayResolver;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import org.springframework.stereotype.Component;
 
 import java.util.EnumMap;
@@ -19,11 +21,16 @@ public class ChatModelGatewayRegistry implements ChatModelGatewayResolver {
             gateways;
 
     public ChatModelGatewayRegistry(
-            List<ChatModelGateway> gateways
+            List<ChatModelGateway> gateways,
+            CircuitBreakerRegistry circuitBreakerRegistry
     ) {
         Objects.requireNonNull(
                 gateways,
                 "gateways must not be null"
+        );
+        Objects.requireNonNull(
+                circuitBreakerRegistry,
+                "circuitBreakerRegistry must not be null"
         );
 
         EnumMap<AgentModelProvider, ChatModelGateway>
@@ -42,8 +49,19 @@ public class ChatModelGatewayRegistry implements ChatModelGatewayResolver {
                             "gateway provider must not be null"
                     );
 
+            CircuitBreaker circuitBreaker =
+                    circuitBreakerRegistry.circuitBreaker(
+                            circuitBreakerName(provider)
+                    );
+
             ChatModelGateway previous =
-                    indexed.putIfAbsent(provider, gateway);
+                    indexed.putIfAbsent(
+                            provider,
+                            new CircuitBreakerChatModelGateway(
+                                    gateway,
+                                    circuitBreaker
+                            )
+                    );
 
             if (previous != null) {
                 throw new IllegalStateException(
@@ -55,6 +73,12 @@ public class ChatModelGatewayRegistry implements ChatModelGatewayResolver {
         }
 
         this.gateways = Map.copyOf(indexed);
+    }
+
+    public static String circuitBreakerName(
+            AgentModelProvider provider
+    ) {
+        return "model:" + provider.name();
     }
 
     public ChatModelGateway requireGateway(

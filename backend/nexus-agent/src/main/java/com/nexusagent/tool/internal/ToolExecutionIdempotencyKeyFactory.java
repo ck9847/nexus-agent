@@ -14,6 +14,9 @@ public final class ToolExecutionIdempotencyKeyFactory {
 
     private static final String KEY_PREFIX = "tool:v1:";
 
+    private static final String CLIENT_TURN_KEY_PREFIX =
+            "tool:turn:v1:";
+
     private static final String HASH_DOMAIN =
             "nexusagent:tool-execution:v1";
 
@@ -71,6 +74,45 @@ public final class ToolExecutionIdempotencyKeyFactory {
         updateString(digest, normalizedToolName);
 
         return KEY_PREFIX
+                + HexFormat.of()
+                .formatHex(digest.digest());
+    }
+
+    /**
+     * 为携带客户端轮次幂等键的注册派生幂等键。
+     *
+     * <p>与 {@link #create} 的按调用身份派生不同：客户端重放同一
+     * {@code Idempotency-Key}（例如网络超时后的重试）时，两次注册
+     * 会碰撞到同一唯一键，由既有的 FOR UPDATE 重放/冲突机制保证
+     * 不创建第二次工具执行、不重复创建工单。
+     *
+     * <p>作用域为 (tenant, conversation, clientTurnKey)：
+     * conversationId 是请求 URL 的一部分，属于同一逻辑轮次
+     * 重试的必要条件。
+     */
+    public String createForClientTurn(
+            long tenantId,
+            long conversationId,
+            String clientTurnKey
+    ) {
+        requirePositive(tenantId, "tenantId");
+        requirePositive(conversationId, "conversationId");
+
+        String normalizedKey = normalizeRequired(
+                clientTurnKey,
+                "clientTurnKey",
+                MAX_TOOL_CALL_ID_LENGTH
+        );
+
+        MessageDigest digest = newDigest();
+
+        updateString(digest, HASH_DOMAIN);
+        updateString(digest, CLIENT_TURN_KEY_PREFIX);
+        updateLong(digest, tenantId);
+        updateLong(digest, conversationId);
+        updateString(digest, normalizedKey);
+
+        return CLIENT_TURN_KEY_PREFIX
                 + HexFormat.of()
                 .formatHex(digest.digest());
     }

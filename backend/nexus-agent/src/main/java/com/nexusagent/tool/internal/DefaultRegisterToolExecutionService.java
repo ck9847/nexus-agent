@@ -80,8 +80,17 @@ public class DefaultRegisterToolExecutionService
         String inputJson =
                 inputJsonCodec.encode(command.input());
 
+        // 客户端提供了轮次幂等键时，改用 (tenant, conversation,
+        // key) 派生的键：同一逻辑轮次的重放会命中同一唯一键，
+        // 由既有 FOR UPDATE 重放/冲突机制去重。
         String idempotencyKey =
-                keyFactory.create(
+                command.clientTurnKey() != null
+                        ? keyFactory.createForClientTurn(
+                        actor.tenantId(),
+                        command.conversationId(),
+                        command.clientTurnKey()
+                )
+                        : keyFactory.create(
                         actor.tenantId(),
                         command.conversationId(),
                         command.agentId(),

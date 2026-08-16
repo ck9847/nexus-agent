@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *     <li>Gauge：{@value #ACTIVE_GAUGE}（当前活跃连接数）；</li>
  *     <li>计数器：已建立、正常完成、error 事件结束、
  *         client disconnect、timeout、executor 拒绝、
- *         error 事件发送失败。</li>
+ *         error 事件发送失败、限流拒绝。</li>
  * </ul>
  *
  * <p>关键不变量：
@@ -43,6 +43,8 @@ public final class ConversationTurnSseMetrics {
             "nexus.sse.connections.capacity_rejected";
     public static final String ERROR_SEND_FAILURE_COUNTER =
             "nexus.sse.connections.error_send_failure";
+    public static final String RATE_LIMITED_COUNTER =
+            "nexus.sse.connections.rate_limited";
 
     /**
      * 连接结束方式，决定终止计数落在哪个计数器上。
@@ -63,6 +65,7 @@ public final class ConversationTurnSseMetrics {
     private final Counter timeout;
     private final Counter capacityRejected;
     private final Counter errorSendFailure;
+    private final Counter rateLimited;
 
     public ConversationTurnSseMetrics(MeterRegistry registry) {
         Counter established = null;
@@ -72,6 +75,7 @@ public final class ConversationTurnSseMetrics {
         Counter timeout = null;
         Counter capacityRejected = null;
         Counter errorSendFailure = null;
+        Counter rateLimited = null;
 
         try {
             Gauge.builder(
@@ -97,6 +101,9 @@ public final class ConversationTurnSseMetrics {
             errorSendFailure = registry.counter(
                     ERROR_SEND_FAILURE_COUNTER
             );
+            rateLimited = registry.counter(
+                    RATE_LIMITED_COUNTER
+            );
         } catch (RuntimeException ignored) {
             // 指标初始化失败绝不能影响 SSE 主流程：
             // 全部计数退化为 no-op。
@@ -109,6 +116,7 @@ public final class ConversationTurnSseMetrics {
         this.timeout = timeout;
         this.capacityRejected = capacityRejected;
         this.errorSendFailure = errorSendFailure;
+        this.rateLimited = rateLimited;
     }
 
     /**
@@ -151,6 +159,10 @@ public final class ConversationTurnSseMetrics {
 
     public void countErrorSendFailure() {
         increment(errorSendFailure);
+    }
+
+    public void countRateLimited() {
+        increment(rateLimited);
     }
 
     private Counter counterFor(End end) {

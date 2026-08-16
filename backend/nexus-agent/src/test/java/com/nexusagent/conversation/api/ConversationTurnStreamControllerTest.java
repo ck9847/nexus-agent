@@ -30,6 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.same;
@@ -74,12 +75,15 @@ class ConversationTurnStreamControllerTest {
     @MockitoBean
     private ConversationTurnSseMetrics metrics;
 
+    @MockitoBean
+    private ConversationTurnRateLimiter rateLimiter;
+
     @Test
     void shouldStartAsyncStreamAndDeliverCompletedEvent()
             throws Exception {
         doAnswer(invocation -> {
             ConversationTurnStreamHandler handler =
-                    invocation.getArgument(2);
+                    invocation.getArgument(3);
             handler.onEvent(
                     new ConversationTurnStreamEvent.Completed(
                             "901",
@@ -98,6 +102,7 @@ class ConversationTurnStreamControllerTest {
         }).when(service).stream(
                 anyString(),
                 anyString(),
+                any(),
                 any()
         );
 
@@ -118,6 +123,7 @@ class ConversationTurnStreamControllerTest {
         verify(service).stream(
                 eq("901"),
                 eq("Hello"),
+                isNull(),
                 any(ConversationTurnStreamHandler.class)
         );
 
@@ -137,6 +143,7 @@ class ConversationTurnStreamControllerTest {
         )).when(service).stream(
                 anyString(),
                 anyString(),
+                any(),
                 any()
         );
 
@@ -167,12 +174,13 @@ class ConversationTurnStreamControllerTest {
         doAnswer(invocation -> {
             ConversationTurnSseEventWriter writer =
                     (ConversationTurnSseEventWriter)
-                            invocation.getArgument(2);
+                            invocation.getArgument(3);
             writer.markTransportClosed();
             throw new IllegalStateException("boom");
         }).when(service).stream(
                 anyString(),
                 anyString(),
+                any(),
                 any()
         );
 
@@ -190,6 +198,7 @@ class ConversationTurnStreamControllerTest {
         verify(service).stream(
                 eq("901"),
                 eq("Hello"),
+                isNull(),
                 any(ConversationTurnStreamHandler.class)
         );
     }
@@ -261,7 +270,7 @@ class ConversationTurnStreamControllerTest {
 
         doAnswer(invocation -> {
             ConversationTurnStreamHandler handler =
-                    invocation.getArgument(2);
+                    invocation.getArgument(3);
             handler.onEvent(
                     new ConversationTurnStreamEvent.Completed(
                             "901",
@@ -280,6 +289,7 @@ class ConversationTurnStreamControllerTest {
         }).when(service).stream(
                 anyString(),
                 anyString(),
+                any(),
                 any()
         );
 
@@ -430,7 +440,8 @@ class ConversationTurnStreamControllerTest {
                         null,
                         executor,
                         timeout,
-                        metrics
+                        metrics,
+                        rateLimiter
                 )
         );
         assertThrows(
@@ -439,7 +450,8 @@ class ConversationTurnStreamControllerTest {
                         service,
                         null,
                         timeout,
-                        metrics
+                        metrics,
+                        rateLimiter
                 )
         );
         assertThrows(
@@ -448,7 +460,8 @@ class ConversationTurnStreamControllerTest {
                         service,
                         executor,
                         null,
-                        metrics
+                        metrics,
+                        rateLimiter
                 )
         );
         assertThrows(
@@ -457,6 +470,7 @@ class ConversationTurnStreamControllerTest {
                         service,
                         executor,
                         timeout,
+                        metrics,
                         null
                 )
         );
@@ -474,7 +488,8 @@ class ConversationTurnStreamControllerTest {
                         service,
                         executor,
                         Duration.ZERO,
-                        metrics
+                        metrics,
+                        rateLimiter
                 )
         );
         assertThrows(
@@ -483,7 +498,8 @@ class ConversationTurnStreamControllerTest {
                         service,
                         executor,
                         Duration.ofSeconds(-1),
-                        metrics
+                        metrics,
+                        rateLimiter
                 )
         );
     }
@@ -493,7 +509,7 @@ class ConversationTurnStreamControllerTest {
             throws Exception {
         doAnswer(invocation -> {
             ConversationTurnStreamHandler handler =
-                    invocation.getArgument(2);
+                    invocation.getArgument(3);
             handler.onEvent(
                     new ConversationTurnStreamEvent.Started(
                             "901",
@@ -530,6 +546,7 @@ class ConversationTurnStreamControllerTest {
         }).when(service).stream(
                 anyString(),
                 anyString(),
+                any(),
                 any()
         );
 
@@ -588,6 +605,7 @@ class ConversationTurnStreamControllerTest {
                 .when(service).stream(
                         anyString(),
                         anyString(),
+                        any(),
                         any()
                 );
 
@@ -612,6 +630,7 @@ class ConversationTurnStreamControllerTest {
                 .when(service).stream(
                         anyString(),
                         anyString(),
+                        any(),
                         any()
                 );
 
@@ -641,6 +660,7 @@ class ConversationTurnStreamControllerTest {
         )).when(service).stream(
                 anyString(),
                 anyString(),
+                any(),
                 any()
         );
 
@@ -691,7 +711,8 @@ class ConversationTurnStreamControllerTest {
                         service,
                         executor,
                         Duration.ofMinutes(2),
-                        metrics
+                        metrics,
+                        rateLimiter
                 );
 
         controller.handleWorkerFailure(
@@ -740,7 +761,8 @@ class ConversationTurnStreamControllerTest {
                         service,
                         executor,
                         Duration.ofMinutes(2),
-                        metrics
+                        metrics,
+                        rateLimiter
                 );
 
         assertDoesNotThrow(() ->

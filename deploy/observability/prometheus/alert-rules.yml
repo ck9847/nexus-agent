@@ -116,6 +116,45 @@ groups:
           description: "{{ $labels.instance }} 的活跃 SSE 连接数连续 30 分钟超过 50，可能由客户端断连未被释放导致连接泄漏。"
           runbook_url: https://github.com/ck9847/nexus-agent/blob/main/docs/runbooks/SseActiveConnectionLeakSuspected.md
 
+      - alert: ModelCircuitOpen
+        expr: |
+          max by (instance, name) (
+            resilience4j_circuitbreaker_state{name=~"model:.*", state="open"}
+          ) == 1
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "模型供应商熔断器已打开"
+          description: "{{ $labels.instance }} 的 {{ $labels.name }} 熔断器处于 OPEN：供应商失败率超过阈值，新调用被快速拒绝（CIRCUIT_OPEN）。"
+          runbook_url: https://github.com/ck9847/nexus-agent/blob/main/docs/runbooks/ModelCircuitOpen.md
+
+      - alert: ConversationTurnRateLimitedSpike
+        expr: |
+          sum by (instance) (
+            increase(nexus_sse_connections_rate_limited_total[10m])
+          ) > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "会话轮次限流拒绝激增"
+          description: "{{ $labels.instance }} 在最近 10 分钟拒绝了超过 20 次 tenant/user 维度限流的轮次请求。"
+          runbook_url: https://github.com/ck9847/nexus-agent/blob/main/docs/runbooks/ConversationTurnRateLimitedSpike.md
+
+      - alert: ModelSafeRetryExhausted
+        expr: |
+          sum by (instance, provider) (
+            increase(nexus_model_retry_total{outcome="exhausted"}[10m])
+          ) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "模型安全重试耗尽"
+          description: "{{ $labels.instance }} 的 provider={{ $labels.provider }} 在最近 10 分钟有超过 5 次重试耗尽（重试后仍失败），供应商可用性可能正在恶化。"
+          runbook_url: https://github.com/ck9847/nexus-agent/blob/main/docs/runbooks/ModelSafeRetryExhausted.md
+
       - alert: HikariConnectionPoolExhaustion
         expr: max by (instance, pool) (hikaricp_connections_pending) > 3
         for: 5m
