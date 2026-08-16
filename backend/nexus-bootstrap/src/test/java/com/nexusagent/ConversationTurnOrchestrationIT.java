@@ -190,6 +190,7 @@ class ConversationTurnOrchestrationIT {
                             fixture.conversationId()
                     ),
                     "  Customer question  ",
+                    null,
                     event -> {
                         events.add(event);
 
@@ -214,11 +215,14 @@ class ConversationTurnOrchestrationIT {
             status.setRollbackOnly();
         });
 
-        assertSame(
-                gateway,
+        // 注册表返回熔断装饰后的网关；脚本网关经由装饰器
+        // 收到了真实调用（上面的事件已证明），此处只断言
+        // provider 解析成功且不是裸实例。
+        assertEquals(
+                AgentModelProvider.OPENAI,
                 gatewayResolver.requireGateway(
                         AgentModelProvider.OPENAI
-                )
+                ).provider()
         );
 
         assertEquals(
@@ -372,6 +376,7 @@ class ConversationTurnOrchestrationIT {
                                 fixture.conversationId()
                         ),
                         "  Question  ",
+                        null,
                         event -> {
                         }
                 )
@@ -481,6 +486,7 @@ class ConversationTurnOrchestrationIT {
                                 fixture.conversationId()
                         ),
                         "Question",
+                        null,
                         event -> {
                             if (event instanceof
                                     ConversationTurnStreamEvent.TextDelta) {
@@ -598,6 +604,7 @@ class ConversationTurnOrchestrationIT {
                                 fixture.conversationId()
                         ),
                         "  Question  ",
+                        null,
                         events::add
                 )
         );
@@ -682,6 +689,7 @@ class ConversationTurnOrchestrationIT {
                                 fixture.conversationId()
                         ),
                         "  Question  ",
+                        null,
                         event -> {
                         }
                 )

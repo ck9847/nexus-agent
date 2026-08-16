@@ -241,6 +241,101 @@ class ToolExecutionIdempotencyKeyFactoryTest {
         );
     }
 
+    @Test
+    void shouldDeriveStableClientTurnKey() {
+        String first = FACTORY.createForClientTurn(
+                3L,
+                901L,
+                "client-key-1"
+        );
+
+        String second = FACTORY.createForClientTurn(
+                3L,
+                901L,
+                "client-key-1"
+        );
+
+        assertEquals(first, second);
+        assertTrue(first.startsWith("tool:turn:v1:"));
+        assertTrue(first.length() <= 128);
+    }
+
+    @Test
+    void shouldScopeClientTurnKeyByTenantAndConversation() {
+        String base = FACTORY.createForClientTurn(
+                3L,
+                901L,
+                "client-key-1"
+        );
+
+        assertNotEquals(
+                base,
+                FACTORY.createForClientTurn(
+                        4L,
+                        901L,
+                        "client-key-1"
+                ),
+                "不同租户的相同客户端键必须不同"
+        );
+
+        assertNotEquals(
+                base,
+                FACTORY.createForClientTurn(
+                        3L,
+                        902L,
+                        "client-key-1"
+                ),
+                "不同会话的相同客户端键必须不同"
+        );
+    }
+
+    @Test
+    void shouldDistinguishClientTurnKeyFromDerivedCallKey() {
+        String clientKey = FACTORY.createForClientTurn(
+                3L,
+                901L,
+                "client-key-1"
+        );
+
+        String derivedKey = FACTORY.create(
+                3L,
+                901L,
+                500L,
+                1001L,
+                "call-1",
+                "create_ticket"
+        );
+
+        assertNotEquals(clientKey, derivedKey);
+        assertTrue(derivedKey.startsWith("tool:v1:"));
+    }
+
+    @Test
+    void shouldNormalizeAndValidateClientTurnKey() {
+        assertEquals(
+                FACTORY.createForClientTurn(3L, 901L, " key "),
+                FACTORY.createForClientTurn(3L, 901L, "key")
+        );
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> FACTORY.createForClientTurn(
+                        3L,
+                        901L,
+                        " "
+                )
+        );
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> FACTORY.createForClientTurn(
+                        3L,
+                        901L,
+                        null
+                )
+        );
+    }
+
     private static Stream<Arguments> nonPositiveIds() {
         return Stream.of(
                 Arguments.of(0L, 2L, 3L, 4L),

@@ -36,7 +36,8 @@ class RegisterToolExecutionCommandTest {
                 "search",
                 input,
                 true,
-                "trace-1"
+                "trace-1",
+                null
         );
     }
 
@@ -70,6 +71,7 @@ class RegisterToolExecutionCommandTest {
                         "  search  ",
                         input(),
                         false,
+                        null,
                         null
                 );
 
@@ -88,6 +90,7 @@ class RegisterToolExecutionCommandTest {
                         "search",
                         input(),
                         false,
+                        null,
                         null
                 );
 
@@ -105,7 +108,8 @@ class RegisterToolExecutionCommandTest {
                         "search",
                         input(),
                         false,
-                        "  trace-1  "
+                        "  trace-1  ",
+                        null
                 );
 
         assertEquals("trace-1", trimmed.traceId());
@@ -122,7 +126,8 @@ class RegisterToolExecutionCommandTest {
                         "search",
                         input(),
                         false,
-                        "   "
+                        "   ",
+                        null
                 );
 
         assertNull(blanked.traceId());
@@ -141,7 +146,8 @@ class RegisterToolExecutionCommandTest {
                                 "search",
                                 input(),
                                 false,
-                                "a".repeat(65)
+                                "a".repeat(65),
+                                null
                         )
                 );
 
@@ -168,6 +174,7 @@ class RegisterToolExecutionCommandTest {
                         "search",
                         input(),
                         false,
+                        null,
                         null
                 )
         );
@@ -188,6 +195,7 @@ class RegisterToolExecutionCommandTest {
                         "search",
                         input(),
                         false,
+                        null,
                         null
                 )
         );
@@ -206,6 +214,7 @@ class RegisterToolExecutionCommandTest {
                         toolName,
                         input(),
                         false,
+                        null,
                         null
                 )
         );
@@ -224,6 +233,7 @@ class RegisterToolExecutionCommandTest {
                                 "search",
                                 null,
                                 false,
+                                null,
                                 null
                         )
                 );
@@ -248,6 +258,7 @@ class RegisterToolExecutionCommandTest {
                                 "search",
                                 input,
                                 false,
+                                null,
                                 null
                         )
                 );

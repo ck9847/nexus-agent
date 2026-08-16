@@ -4,15 +4,22 @@ import com.nexusagent.agent.domain.AgentModelProvider;
 import com.nexusagent.model.api.ChatModelErrorCategory;
 import com.nexusagent.model.api.ChatModelException;
 import com.nexusagent.model.api.ChatModelGateway;
+import com.nexusagent.model.api.ChatModelMessage;
+import com.nexusagent.model.api.ChatModelOptions;
+import com.nexusagent.model.api.ChatModelRequest;
+import com.nexusagent.model.api.ChatModelRole;
+import com.nexusagent.model.api.ChatModelStreamHandler;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class ChatModelGatewayRegistryTest {
@@ -24,21 +31,53 @@ class ChatModelGatewayRegistryTest {
 
         ChatModelGatewayRegistry registry =
                 new ChatModelGatewayRegistry(
-                        List.of(openAi)
+                        List.of(openAi),
+                        CircuitBreakerRegistry.ofDefaults()
                 );
 
-        assertSame(
-                openAi,
+        // 注册表返回熔断装饰后的网关：不再是原始实例，
+        // 但 provider 透传、stream 调用委托到配置的网关。
+        ChatModelGateway resolved =
                 registry.requireGateway(
                         AgentModelProvider.OPENAI
-                )
+                );
+
+        assertNotSame(openAi, resolved);
+        assertEquals(
+                AgentModelProvider.OPENAI,
+                resolved.provider()
         );
+
+        ChatModelRequest request =
+                new ChatModelRequest(
+                        "gpt-5-mini",
+                        "sys",
+                        new ChatModelOptions(
+                                null, null, null
+                        ),
+                        List.of(new ChatModelMessage(
+                                ChatModelRole.USER,
+                                "hi",
+                                List.of(),
+                                null
+                        )),
+                        List.of()
+                );
+        ChatModelStreamHandler handler = event -> {
+        };
+
+        resolved.stream(request, handler);
+
+        verify(openAi).stream(request, handler);
     }
 
     @Test
     void shouldThrowChatModelExceptionWhenNoGatewayConfigured() {
         ChatModelGatewayRegistry registry =
-                new ChatModelGatewayRegistry(List.of());
+                new ChatModelGatewayRegistry(
+                        List.of(),
+                        CircuitBreakerRegistry.ofDefaults()
+                );
 
         assertThrows(
                 ChatModelException.class,
@@ -51,7 +90,10 @@ class ChatModelGatewayRegistryTest {
     @Test
     void shouldClassifyMissingGatewayAsProviderUnavailable() {
         ChatModelGatewayRegistry registry =
-                new ChatModelGatewayRegistry(List.of());
+                new ChatModelGatewayRegistry(
+                        List.of(),
+                        CircuitBreakerRegistry.ofDefaults()
+                );
 
         ChatModelException exception = assertThrows(
                 ChatModelException.class,
@@ -69,7 +111,10 @@ class ChatModelGatewayRegistryTest {
     @Test
     void shouldMakeMissingGatewayErrorRetryable() {
         ChatModelGatewayRegistry registry =
-                new ChatModelGatewayRegistry(List.of());
+                new ChatModelGatewayRegistry(
+                        List.of(),
+                        CircuitBreakerRegistry.ofDefaults()
+                );
 
         ChatModelException exception = assertThrows(
                 ChatModelException.class,
@@ -91,7 +136,8 @@ class ChatModelGatewayRegistryTest {
         IllegalStateException exception = assertThrows(
                 IllegalStateException.class,
                 () -> new ChatModelGatewayRegistry(
-                        List.of(first, second)
+                        List.of(first, second),
+                        CircuitBreakerRegistry.ofDefaults()
                 )
         );
 
@@ -109,7 +155,8 @@ class ChatModelGatewayRegistryTest {
         assertThrows(
                 NullPointerException.class,
                 () -> new ChatModelGatewayRegistry(
-                        List.of(gateway)
+                        List.of(gateway),
+                        CircuitBreakerRegistry.ofDefaults()
                 )
         );
     }
@@ -122,7 +169,8 @@ class ChatModelGatewayRegistryTest {
         assertThrows(
                 NullPointerException.class,
                 () -> new ChatModelGatewayRegistry(
-                        List.of(openAi, null)
+                        List.of(openAi, null),
+                        CircuitBreakerRegistry.ofDefaults()
                 )
         );
     }
@@ -130,7 +178,10 @@ class ChatModelGatewayRegistryTest {
     @Test
     void shouldRejectNullProviderOnRequireGateway() {
         ChatModelGatewayRegistry registry =
-                new ChatModelGatewayRegistry(List.of());
+                new ChatModelGatewayRegistry(
+                        List.of(),
+                        CircuitBreakerRegistry.ofDefaults()
+                );
 
         assertThrows(
                 NullPointerException.class,

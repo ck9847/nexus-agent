@@ -19,6 +19,7 @@ import com.nexusagent.model.api.ChatModelStreamHandler;
 import com.nexusagent.model.api.ChatModelToolCall;
 import com.nexusagent.model.api.ChatTokenUsage;
 import com.nexusagent.model.api.ChatToolDefinition;
+import com.nexusagent.resilience.ResilienceProperties;
 import com.nexusagent.testing.ThrowingMeterRegistry;
 import com.nexusagent.ticket.domain.TicketStatus;
 import com.nexusagent.tool.api.RegisterToolExecutionCommand;
@@ -30,6 +31,8 @@ import com.nexusagent.tool.internal.CreateTicketChatToolDefinition;
 import com.nexusagent.tool.internal.CreateTicketToolExecutionService;
 import com.nexusagent.tool.internal.ExecuteCreateTicketToolResult;
 import io.micrometer.core.instrument.MockClock;
+
+import java.time.Duration;
 import io.micrometer.core.instrument.Timer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -344,11 +347,37 @@ class DefaultStreamConversationTurnServiceTest {
                 completeToolCallService,
                 toolExecutionService,
                 continuationService,
-                new ConversationTurnMetrics(meterRegistry)
+                new ConversationTurnMetrics(meterRegistry),
+                noRetryExecutor()
         );
 
         lenient().when(createTicketTool.definition())
                 .thenReturn(TOOL_DEFINITION);
+    }
+
+    /**
+     * 构造“安全重试关闭”（maxAttempts=1）的执行器：
+     * 既有单测针对单次调用的语义，重试语义由
+     * SafeModelRetryExecutorTest 专门覆盖。
+     */
+    private SafeModelRetryExecutor noRetryExecutor() {
+        return new SafeModelRetryExecutor(
+                new ResilienceProperties(
+                        new ResilienceProperties.RateLimit(
+                                false, 60, Duration.ofSeconds(10),
+                                6, Duration.ofSeconds(10)
+                        ),
+                        new ResilienceProperties.CircuitBreaker(
+                                20, 20, 50f,
+                                Duration.ofSeconds(30), 3
+                        ),
+                        new ResilienceProperties.ModelRetry(
+                                1, Duration.ofMillis(1), 1
+                        )
+                ),
+                attempt -> 0L,
+                new ConversationTurnMetrics(meterRegistry)
+        );
     }
 
     @Test
@@ -387,7 +416,7 @@ class DefaultStreamConversationTurnServiceTest {
         List<ConversationTurnStreamEvent> received =
                 new ArrayList<>();
 
-        service.stream("901", "  Question  ", received::add);
+        service.stream("901", "  Question  ", null, received::add);
 
         assertEquals(
                 List.of(
@@ -479,6 +508,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )
@@ -519,6 +549,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )
@@ -556,6 +587,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )
@@ -588,6 +620,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )
@@ -632,6 +665,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         failingHandler
                 )
         );
@@ -687,6 +721,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         failingHandler
                 )
         );
@@ -735,6 +770,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )
@@ -785,6 +821,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )
@@ -926,6 +963,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         failingHandler
                 )
         );
@@ -1004,6 +1042,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         handler
                 )
         );
@@ -1058,6 +1097,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )
@@ -1113,6 +1153,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         failingHandler
                 )
         );
@@ -1163,6 +1204,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )
@@ -1195,7 +1237,7 @@ class DefaultStreamConversationTurnServiceTest {
         List<ConversationTurnStreamEvent> received =
                 new ArrayList<>();
 
-        service.stream("901", "Question", received::add);
+        service.stream("901", "Question", null, received::add);
 
         assertEquals(
                 List.of(
@@ -1376,6 +1418,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )
@@ -1430,6 +1473,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )
@@ -1497,6 +1541,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )
@@ -1571,6 +1616,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )
@@ -1627,6 +1673,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         handler
                 )
         );
@@ -1664,6 +1711,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )
@@ -1745,6 +1793,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )
@@ -1788,6 +1837,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )
@@ -1832,6 +1882,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         handler
                 )
         );
@@ -1860,6 +1911,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         null
                 )
         );
@@ -1885,6 +1937,7 @@ class DefaultStreamConversationTurnServiceTest {
                                 "stream",
                                 String.class,
                                 String.class,
+                                String.class,
                                 ConversationTurnStreamHandler.class
                         );
 
@@ -1904,7 +1957,7 @@ class DefaultStreamConversationTurnServiceTest {
     void shouldRecordCompletedTextOutcomeOnce() {
         stubTextRoundSuccess();
 
-        service.stream("901", "Question", event -> {
+        service.stream("901", "Question", null, event -> {
         });
 
         assertEquals(
@@ -1956,7 +2009,7 @@ class DefaultStreamConversationTurnServiceTest {
                 eq(SECOND_USAGE)
         )).thenReturn(COMPLETED_CONTINUATION);
 
-        service.stream("901", "Question", event -> {
+        service.stream("901", "Question", null, event -> {
         });
 
         assertEquals(
@@ -1992,6 +2045,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )
@@ -2028,6 +2082,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )
@@ -2062,6 +2117,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )
@@ -2099,6 +2155,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )
@@ -2141,6 +2198,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )
@@ -2201,7 +2259,7 @@ class DefaultStreamConversationTurnServiceTest {
                 any()
         )).thenReturn(COMPLETED);
 
-        service.stream("901", "Question", event -> {
+        service.stream("901", "Question", null, event -> {
         });
 
         assertEquals(
@@ -2224,7 +2282,7 @@ class DefaultStreamConversationTurnServiceTest {
         List<ConversationTurnStreamEvent> received =
                 new ArrayList<>();
 
-        service.stream("901", "Question", received::add);
+        service.stream("901", "Question", null, received::add);
 
         assertTrue(received.stream().anyMatch(event ->
                 event
@@ -2269,6 +2327,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )
@@ -2295,7 +2354,7 @@ class DefaultStreamConversationTurnServiceTest {
         List<ConversationTurnStreamEvent> received =
                 new ArrayList<>();
 
-        service.stream("901", "Question", received::add);
+        service.stream("901", "Question", null, received::add);
 
         assertTrue(received.stream().anyMatch(event ->
                 event
@@ -2316,7 +2375,7 @@ class DefaultStreamConversationTurnServiceTest {
     void shouldExposeOnlyLowCardinalityTagsOnModelMetric() {
         stubTextRoundSuccess();
 
-        service.stream("901", "Question", event -> {
+        service.stream("901", "Question", null, event -> {
         });
 
         // 再跑一次失败轮，覆盖 failure 时序的标签。
@@ -2334,6 +2393,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )
@@ -2365,7 +2425,7 @@ class DefaultStreamConversationTurnServiceTest {
     void shouldCountModelCallSuccess() {
         stubTextRoundSuccess();
 
-        service.stream("901", "Question", event -> {
+        service.stream("901", "Question", null, event -> {
         });
 
         assertEquals(
@@ -2407,6 +2467,7 @@ class DefaultStreamConversationTurnServiceTest {
                 () -> service.stream(
                         "901",
                         "Question",
+                         null,
                         event -> {
                         }
                 )

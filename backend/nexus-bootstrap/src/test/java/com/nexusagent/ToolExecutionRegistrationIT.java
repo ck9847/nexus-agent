@@ -762,7 +762,8 @@ class ToolExecutionRegistrationIT {
                         "search",
                         input(),
                         false,
-                        "trace-1"
+                        "trace-1",
+                        null
                 )
         );
     }
@@ -782,7 +783,8 @@ class ToolExecutionRegistrationIT {
                         "search",
                         input(),
                         false,
-                        "trace-1"
+                        "trace-1",
+                        null
                 )
         );
     }
@@ -805,7 +807,8 @@ class ToolExecutionRegistrationIT {
                         "search",
                         input(),
                         false,
-                        "trace-1"
+                        "trace-1",
+                        null
                 )
         );
     }
@@ -1031,7 +1034,8 @@ class ToolExecutionRegistrationIT {
                 toolName,
                 input,
                 approvalRequired,
-                traceId
+                traceId,
+                null
         );
     }
 
