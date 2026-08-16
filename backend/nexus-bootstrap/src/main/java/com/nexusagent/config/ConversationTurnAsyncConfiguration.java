@@ -1,6 +1,9 @@
 package com.nexusagent.config;
 
+import com.nexusagent.conversation.internal.ConversationTurnMetrics;
 import com.nexusagent.observability.RequestCorrelationTaskDecorator;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.binder.jvm.ExecutorServiceMetrics;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -42,13 +45,22 @@ public class ConversationTurnAsyncConfiguration {
     @Bean(name = "conversationTurnWorkerExecutor")
     ThreadPoolTaskExecutor conversationTurnWorkerExecutor(
             ConversationTurnStreamingProperties properties,
-            TaskDecorator requestCorrelationTaskDecorator
+            TaskDecorator requestCorrelationTaskDecorator,
+            ConversationTurnMetrics turnMetrics
     ) {
         ThreadPoolTaskExecutor executor =
                 new ThreadPoolTaskExecutor();
 
+        // 请求关联传播之外叠加队列等待计时：
+        // decorate 发生在提交线程（入队前），
+        // run 发生在 worker 线程（出队后），两者之差即排队耗时。
         executor.setTaskDecorator(
-                requestCorrelationTaskDecorator
+                new CompositeTaskDecorator(
+                        new QueueWaitTimingTaskDecorator(
+                                turnMetrics
+                        ),
+                        requestCorrelationTaskDecorator
+                )
         );
         executor.setCorePoolSize(
                 properties.corePoolSize()
@@ -82,5 +94,76 @@ public class ConversationTurnAsyncConfiguration {
         return new DelegatingSecurityContextAsyncTaskExecutor(
                 delegate
         );
+    }
+
+    /**
+     * 为 worker 线程池绑定 executor 指标
+     * （队列深度、活跃线程、池利用率、已完成任务数）。
+     *
+     * <p>绑定失败绝不阻止启动：执行器本身可用性优先于其观测。
+     */
+    @Bean
+    Object conversationTurnExecutorMetrics(
+            MeterRegistry meterRegistry,
+            @Qualifier("conversationTurnWorkerExecutor")
+            ThreadPoolTaskExecutor executor
+    ) {
+        try {
+            ExecutorServiceMetrics.monitor(
+                    meterRegistry,
+                    executor.getThreadPoolExecutor(),
+                    "conversationTurnWorker",
+                    "nexus.conversation"
+            );
+        } catch (RuntimeException ignored) {
+            // 指标绑定失败不影响执行器。
+        }
+
+        return new Object();
+    }
+
+    /**
+     * 顺序组合两个 TaskDecorator：先排队计时、再请求关联。
+     */
+    record CompositeTaskDecorator(
+            TaskDecorator outer,
+            TaskDecorator inner
+    ) implements TaskDecorator {
+
+        @Override
+        public Runnable decorate(Runnable runnable) {
+            return outer.decorate(inner.decorate(runnable));
+        }
+    }
+
+    /**
+     * 记录任务从提交到开始执行的排队等待时间
+     * （{@code nexus.conversation.turn.queue.wait}）。
+     */
+    private static final class
+    QueueWaitTimingTaskDecorator implements TaskDecorator {
+
+        private final ConversationTurnMetrics metrics;
+
+        private QueueWaitTimingTaskDecorator(
+                ConversationTurnMetrics metrics
+        ) {
+            this.metrics = metrics;
+        }
+
+        @Override
+        public Runnable decorate(Runnable runnable) {
+            ConversationTurnMetrics.Sample sample =
+                    metrics.startTimer();
+
+            return () -> {
+                sample.stop(
+                        ConversationTurnMetrics
+                                .QUEUE_WAIT_METRIC
+                );
+
+                runnable.run();
+            };
+        }
     }
 }

@@ -9,6 +9,7 @@ import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -36,6 +37,7 @@ public class ConversationTurnStreamController {
     private final AsyncTaskExecutor executor;
     private final Duration timeout;
     private final ConversationTurnSseMetrics metrics;
+    private final ConversationTurnRateLimiter rateLimiter;
 
     public ConversationTurnStreamController(
             StreamConversationTurnService service,
@@ -43,7 +45,8 @@ public class ConversationTurnStreamController {
             AsyncTaskExecutor executor,
             @Value("${nexus.conversation.streaming.timeout:2m}")
             Duration timeout,
-            ConversationTurnSseMetrics metrics
+            ConversationTurnSseMetrics metrics,
+            ConversationTurnRateLimiter rateLimiter
     ) {
         this.service = Objects.requireNonNull(
                 service,
@@ -61,6 +64,10 @@ public class ConversationTurnStreamController {
                 metrics,
                 "metrics must not be null"
         );
+        this.rateLimiter = Objects.requireNonNull(
+                rateLimiter,
+                "rateLimiter must not be null"
+        );
 
         if (timeout.isNegative() || timeout.isZero()) {
             throw new IllegalArgumentException(
@@ -76,9 +83,21 @@ public class ConversationTurnStreamController {
     )
     public SseEmitter stream(
             @PathVariable("id") String conversationId,
+            @RequestHeader(
+                    value = "Idempotency-Key",
+                    required = false
+            )
+            String idempotencyKey,
             @Valid @RequestBody
             StreamConversationTurnRequest request
     ) {
+        // 限流与幂等键校验都必须在提交线程池之前、当前认证
+        // 请求线程上执行：过载时绝不占用 worker 名额，也不建立
+        // SSE 连接；无效幂等键直接得到 400 而不是 SSE 错误事件。
+        rateLimiter.checkPermission();
+        String normalizedIdempotencyKey =
+                normalizeIdempotencyKey(idempotencyKey);
+
         SseEmitter emitter =
                 new SseEmitter(timeout.toMillis());
 
@@ -94,6 +113,7 @@ public class ConversationTurnStreamController {
                     runTurn(
                             conversationId,
                             request.content(),
+                            normalizedIdempotencyKey,
                             emitter,
                             writer
                     )
@@ -132,6 +152,7 @@ public class ConversationTurnStreamController {
     private void runTurn(
             String conversationId,
             String content,
+            String idempotencyKey,
             SseEmitter emitter,
             ConversationTurnSseEventWriter writer
     ) {
@@ -139,6 +160,7 @@ public class ConversationTurnStreamController {
             service.stream(
                     conversationId,
                     content,
+                    idempotencyKey,
                     writer
             );
         } catch (RuntimeException failure) {
@@ -183,6 +205,33 @@ public class ConversationTurnStreamController {
                     deliveryFailure
             );
         }
+    }
+
+    /**
+     * 归一化客户端幂等键：空白视为未提供；长度与注册命令
+     * 的约束一致（128），超长键按无效请求拒绝。
+     */
+    private static String normalizeIdempotencyKey(
+            String idempotencyKey
+    ) {
+        if (idempotencyKey == null) {
+            return null;
+        }
+
+        String normalized = idempotencyKey.trim();
+
+        if (normalized.isBlank()) {
+            return null;
+        }
+
+        if (normalized.length() > 128) {
+            throw new IllegalArgumentException(
+                    "Idempotency-Key must not exceed "
+                            + "128 characters"
+            );
+        }
+
+        return normalized;
     }
 
     private static void completeWithErrorSafely(

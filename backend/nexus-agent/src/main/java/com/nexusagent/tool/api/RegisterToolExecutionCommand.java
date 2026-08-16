@@ -5,6 +5,13 @@ import com.fasterxml.jackson.databind.JsonNode;
 import java.util.Objects;
 import java.util.regex.Pattern;
 
+/**
+ * @param clientTurnKey 客户端可选提供的轮次幂等键
+ *         （{@code Idempotency-Key} 请求头）。提供时，注册服务
+ *         以 (tenant, conversation, clientTurnKey) 派生幂等键，
+ *         同一键的重复请求不会创建第二次工具执行；
+ *         为 null 时退回按调用身份派生的默认键。
+ */
 public record RegisterToolExecutionCommand(
         long conversationId,
         long agentId,
@@ -13,7 +20,8 @@ public record RegisterToolExecutionCommand(
         String toolName,
         JsonNode input,
         boolean approvalRequired,
-        String traceId
+        String traceId,
+        String clientTurnKey
 ) {
 
     private static final Pattern TOOL_NAME_PATTERN =
@@ -62,6 +70,11 @@ public record RegisterToolExecutionCommand(
                 traceId,
                 "traceId",
                 64
+        );
+        clientTurnKey = normalizeOptional(
+                clientTurnKey,
+                "clientTurnKey",
+                128
         );
     }
 

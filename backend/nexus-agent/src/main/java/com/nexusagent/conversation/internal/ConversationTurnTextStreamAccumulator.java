@@ -5,6 +5,7 @@ import com.nexusagent.conversation.api.ConversationTurnStreamHandler;
 import com.nexusagent.model.api.ChatModelErrorCategory;
 import com.nexusagent.model.api.ChatModelException;
 import com.nexusagent.model.api.ChatModelFinishReason;
+import com.nexusagent.model.api.ChatModelStreamConsumerException;
 import com.nexusagent.model.api.ChatModelStreamEvent;
 import com.nexusagent.model.api.ChatModelStreamHandler;
 import com.nexusagent.model.api.ChatTokenUsage;
@@ -38,6 +39,9 @@ final class ConversationTurnTextStreamAccumulator
         implements ChatModelStreamHandler {
 
     private static final int MAX_CONTENT_LENGTH = 50_000;
+
+    private static final String STREAM_CONSUMER_FAILED_MESSAGE =
+            "Conversation turn stream consumer failed";
 
     private final ConversationTurnStreamHandler downstream;
     private final StringBuilder content = new StringBuilder();
@@ -139,7 +143,8 @@ final class ConversationTurnTextStreamAccumulator
                     new ConversationTurnStreamEvent.TextDelta(text)
             );
         } catch (RuntimeException cause) {
-            throw new ConversationTurnStreamConsumerException(
+            throw new ChatModelStreamConsumerException(
+                    STREAM_CONSUMER_FAILED_MESSAGE,
                     cause
             );
         }
@@ -159,18 +164,5 @@ final class ConversationTurnTextStreamAccumulator
             ChatModelFinishReason finishReason,
             ChatTokenUsage usage
     ) {
-    }
-}
-
-final class ConversationTurnStreamConsumerException
-        extends RuntimeException {
-
-    ConversationTurnStreamConsumerException(
-            Throwable cause
-    ) {
-        super(
-                "Conversation turn stream consumer failed",
-                cause
-        );
     }
 }
