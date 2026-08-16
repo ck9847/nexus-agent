@@ -38,6 +38,27 @@ management:
       exposure:
         include: health,info,prometheus
 
+  metrics:
+    distribution:
+      # Prometheus 的 histogram_quantile 依赖 *_bucket。只对三个
+      # 低基数核心 Timer 开启直方图，避免无边界地增加时序数量。
+      percentiles-histogram:
+        http.server.requests: true
+        nexus.conversation.turn: true
+        nexus.model.call: true
+      minimum-expected-value:
+        http.server.requests: 1ms
+        nexus.conversation.turn: 10ms
+        nexus.model.call: 10ms
+      maximum-expected-value:
+        http.server.requests: 10s
+        nexus.conversation.turn: 2m
+        nexus.model.call: 2m
+      slo:
+        http.server.requests: 10ms,25ms,50ms,100ms,250ms,500ms,1s,2s,5s,10s
+        nexus.conversation.turn: 100ms,250ms,500ms,1s,2s,5s,10s,30s,1m,2m
+        nexus.model.call: 100ms,250ms,500ms,1s,2s,5s,10s,30s,1m,2m
+
   endpoint:
     health:
       show-details: when_authorized
@@ -80,3 +101,9 @@ nexus:
       core-pool-size: ${NEXUS_CONVERSATION_STREAM_CORE_POOL_SIZE:4}
       max-pool-size: ${NEXUS_CONVERSATION_STREAM_MAX_POOL_SIZE:16}
       queue-capacity: ${NEXUS_CONVERSATION_STREAM_QUEUE_CAPACITY:100}
+
+  observability:
+    metrics-scrape:
+      enabled: ${NEXUS_METRICS_SCRAPE_ENABLED:false}
+      username: ${NEXUS_METRICS_USERNAME:prometheus}
+      password: ${NEXUS_METRICS_PASSWORD:}
