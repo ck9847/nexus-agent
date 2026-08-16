@@ -226,13 +226,8 @@ jobs:
           name: nexus-agent-${{ needs.build.outputs.version }}
           path: dist
 
-      - name: Generate CycloneDX SBOM (filesystem)
-        uses: anchore/sbom-action@v0
-        with:
-          format: cyclonedx-json
-          artifact-name: nexus-agent-${{ needs.build.outputs.version }}-sbom.json
-          upload-release-assets: true
-
+      # 先建 Release 再生成 SBOM：sbom-action 的
+      # upload-release-assets 需要目标 Release 已存在。
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
@@ -240,3 +235,10 @@ jobs:
             dist/*.jar
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+      - name: Generate CycloneDX SBOM and attach to release
+        uses: anchore/sbom-action@v0
+        with:
+          format: cyclonedx-json
+          artifact-name: nexus-agent-${{ needs.build.outputs.version }}-sbom.json
+          upload-release-assets: true
