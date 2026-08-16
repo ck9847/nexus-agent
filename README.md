@@ -9,14 +9,39 @@ NexusAgent 是一个多租户企业智能工单 Agent 平台。用户通过自�
 > 当前版本：V0.1。核心闭环、生产运行镜像、端到端可观测性、
 > 弹性保护（限流/熔断/安全重试/幂等）与压测证明均已完成。
 
-## 在线演示
+## 本地演示
 
-- 演示地址：**<部署后填写>**（部署方式见
-  [`deploy/demo/`](deploy/demo/README.md)，一键脚本
-  `scripts/deploy-demo.ps1`）
-- 演示流程：`scripts/demo.ps1 -BaseUrl <演示地址>` 会 bootstrap
-  一个独立演示租户、激活 Agent、发起一次 SSE 建单对话并查询工单
-- 未配置真实模型供应商时可用 `-SkipStream` 验证认证/工单/审计链路
+三种方式，全部在本地运行：
+
+1. **零成本完整闭环（推荐）**——内置 OpenAI 兼容 SSE mock 作为
+   模型供应商，无需 API key：
+
+   ```powershell
+   .\scripts\demo.ps1 -UseMockProvider
+   ```
+
+   自动完成：启动 MySQL + 应用 + mock 供应商 → bootstrap 独立演示
+   租户 → 创建并激活 Agent → 一次完整 SSE 建单对话（两轮模型调用
+   + `create_ticket` 工具执行）→ 查询持久化的消息历史与 HIGH
+   优先级工单。每个演示租户相互隔离，可反复运行。
+
+2. **真实模型供应商**——在 `.env` 配置 `OPENAI_API_KEY`（及可选
+   的 `NEXUS_OPENAI_BASE_URL`，支持任何 OpenAI 兼容端点）：
+
+   ```powershell
+   .\scripts\demo.ps1 -ModelName gpt-4o-mini
+   ```
+
+3. **免模型链路验证**——不发起模型调用，验证认证/会话/审计：
+
+   ```powershell
+   .\scripts\demo.ps1 -SkipStream
+   ```
+
+前置条件：Docker Desktop 与本地 `.env`（从
+[`.env.example`](.env.example) 复制并填写）。配套
+`--profile observability` 可同时启动 Prometheus + Grafana
+（见[运维手册](docs/operations-runbook.md)）。
 
 ## 核心链路
 
@@ -68,17 +93,18 @@ flowchart LR
         I --> T["Trivy 依赖/镜像扫描"]
         S --> R["GitHub Release"]
     end
-    G --> D["演示服务器 (deploy/demo)"]
-    subgraph demo["compose.demo"]
-        C["Caddy (自动 TLS)"] --> APP["nexus-agent (GHCR 镜像)"]
-        APP --> M[("MySQL 8.4")]
+    subgraph local["本地运行 (deploy/compose.yaml)"]
+        APP["nexus-agent (源码构建)"] --> M[("MySQL 8.4")]
+        MOCK["OpenAI mock (--profile mock-provider)"] -.可选.- APP
+        PROM["Prometheus (--profile observability)"] -.可选.- APP
     end
-    D --- demo
+    G -.拉取已发布镜像也可.- APP
 ```
 
-本地/自托管同样支持 `deploy/compose.yaml`（含可选 Prometheus +
-Grafana observability profile，见
-[运维手册](docs/operations-runbook.md)）。
+本地默认从源码构建（`deploy/compose.yaml`）；已发布镜像在
+`ghcr.io/ck9847/nexus-agent`，可直接拉取运行。可选 profile：
+`mock-provider`（零成本演示）、`observability`（Prometheus +
+Grafana，见[运维手册](docs/operations-runbook.md)）。
 
 ## 技术栈
 
