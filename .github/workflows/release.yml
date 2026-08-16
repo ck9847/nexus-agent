@@ -137,7 +137,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Trivy fs scan (vuln + secret)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -162,7 +162,7 @@ jobs:
       security-events: write
     steps:
       - name: Trivy image scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.IMAGE_NAME }}@${{ needs.publish-image.outputs.digest }}
           severity: HIGH,CRITICAL
