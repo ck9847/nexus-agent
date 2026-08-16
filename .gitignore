@@ -20,6 +20,10 @@ venv/
 .env.*
 !.env.example
 
+# Deploy secrets: 只允许提交占位文件，密码文件绝不进 Git。
+deploy/secrets/*
+!deploy/secrets/.gitkeep
+
 # Logs
 logs/
 *.log
@@ -36,3 +40,5 @@ Thumbs.db
 
 # Local AI tool settings
 .claude/
+# Local agent workspace
+.zcode/

@@ -1,0 +1,38 @@
+# Nexus Agent 监控抓取配置。
+#
+# 部署约定（详见同目录 README.md）：
+#   - 本目录整体挂载到容器的 /etc/prometheus/；
+#   - 抓取密码单独挂载到 /run/secrets/metrics_scrape_password
+#     （文件只含密码本身、无换行、权限 0400），
+#     绝不以明文写入本配置文件；
+#   - 数据保留期使用 Prometheus 默认
+#     --storage.tsdb.retention.time=15d（15 天）。
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - recording-rules.yml
+  - alert-rules.yml
+
+scrape_configs:
+  - job_name: nexus-agent
+    metrics_path: /actuator/prometheus
+    scrape_interval: 15s
+    basic_auth:
+      # 用户名与应用的 NEXUS_METRICS_USERNAME 保持一致（默认 prometheus）。
+      username: prometheus
+      password_file: /run/secrets/metrics_scrape_password
+    static_configs:
+      - targets:
+          - app:8080
+    metric_relabel_configs:
+      # 租户/用户/请求级高基数与敏感标签一律丢弃，绝不进入 TSDB。
+      # 这是抓取侧的纵深防御，与应用侧的白名单标签测试相互印证。
+      - action: labeldrop
+        regex: (tenantId|tenant_id|userId|user_id|conversationId|conversation_id)
+      - action: labeldrop
+        regex: (requestId|request_id|traceId|trace_id|messageId|message_id)
+      - action: labeldrop
+        regex: (clientIp|client_ip|ipAddress|ip_address)

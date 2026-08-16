@@ -3,11 +3,13 @@ package com.nexusagent.conversation.internal;
 import com.nexusagent.model.api.ChatModelErrorCategory;
 import com.nexusagent.testing.ThrowingMeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import java.util.Set;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -17,6 +19,64 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class ConversationTurnMetricsTest {
+
+    @Test
+    void shouldPreRegisterBoundedModelSeriesForFirstFailureDetection() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+
+        new ConversationTurnMetrics(registry);
+
+        assertNotNull(
+                registry.find(
+                                ConversationTurnMetrics
+                                        .MODEL_CALL_METRIC
+                        )
+                        .tags(
+                                ConversationTurnMetrics.TAG_PROVIDER,
+                                "OPENAI",
+                                ConversationTurnMetrics.TAG_OUTCOME,
+                                ConversationTurnMetrics.OUTCOME_SUCCESS,
+                                ConversationTurnMetrics
+                                        .TAG_ERROR_CATEGORY,
+                                ConversationTurnMetrics
+                                        .ERROR_CATEGORY_NONE
+                        )
+                        .timer()
+        );
+
+        for (String category : Set.of(
+                "AUTHENTICATION",
+                "RATE_LIMIT",
+                "TIMEOUT",
+                "PROVIDER_ERROR",
+                "MALFORMED_RESPONSE",
+                "STREAM_INTERRUPTED"
+        )) {
+            assertNotNull(
+                    registry.find(
+                                    ConversationTurnMetrics
+                                            .MODEL_CALL_METRIC
+                            )
+                            .tags(
+                                    ConversationTurnMetrics.TAG_PROVIDER,
+                                    "OPENAI",
+                                    ConversationTurnMetrics.TAG_OUTCOME,
+                                    ConversationTurnMetrics.OUTCOME_FAILURE,
+                                    ConversationTurnMetrics
+                                            .TAG_ERROR_CATEGORY,
+                                    category
+                            )
+                            .timer(),
+                    category
+            );
+        }
+
+        assertEquals(7, registry.getMeters().stream()
+                .filter(meter -> ConversationTurnMetrics
+                        .MODEL_CALL_METRIC
+                        .equals(meter.getId().getName()))
+                .count());
+    }
 
     @Test
     void shouldRecordTimerWhenHealthy() {
@@ -83,14 +143,17 @@ class ConversationTurnMetricsTest {
 
         registry.throwOnTimerCreation();
 
+        // 构造函数已为 MODEL_CALL_METRIC 预注册零基线 timer，
+        // 这里改用未预注册的 TURN_DURATION_METRIC：
+        // stop 期间 timer 创建抛错必须被吞掉且不产生任何新 timer。
         assertDoesNotThrow(() -> sample.stop(
-                ConversationTurnMetrics.MODEL_CALL_METRIC,
+                ConversationTurnMetrics.TURN_DURATION_METRIC,
                 ConversationTurnMetrics.TAG_OUTCOME,
                 ConversationTurnMetrics.OUTCOME_SUCCESS
         ));
 
         assertNull(registry.find(
-                        ConversationTurnMetrics.MODEL_CALL_METRIC
+                        ConversationTurnMetrics.TURN_DURATION_METRIC
                 )
                 .timer());
     }

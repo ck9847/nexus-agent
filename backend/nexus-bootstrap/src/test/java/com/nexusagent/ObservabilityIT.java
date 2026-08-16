@@ -395,6 +395,24 @@ class ObservabilityIT {
         );
         assertTrue(
                 scrape.contains(
+                        "http_server_requests_seconds_bucket"
+                ),
+                "HTTP histogram buckets must be exposed"
+        );
+        assertTrue(
+                scrape.contains(
+                        "nexus_conversation_turn_seconds_bucket"
+                ),
+                "turn histogram buckets must be exposed"
+        );
+        assertTrue(
+                scrape.contains(
+                        "nexus_model_call_seconds_bucket"
+                ),
+                "model call histogram buckets must be exposed"
+        );
+        assertTrue(
+                scrape.contains(
                         "nexus_sse_connections_active"
                 ),
                 "sse active gauge must be exposed"

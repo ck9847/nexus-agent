@@ -1,5 +1,6 @@
 package com.nexusagent.conversation.internal;
 
+import com.nexusagent.agent.domain.AgentModelProvider;
 import com.nexusagent.model.api.ChatModelErrorCategory;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -63,6 +64,52 @@ public final class ConversationTurnMetrics {
                 registry,
                 "registry must not be null"
         );
+
+        preRegisterModelCallSeries();
+    }
+
+    /**
+     * 为固定 provider/outcome/error_category 组合建立零基线。
+     *
+     * <p>若失败序列只在首次错误时才出现，Prometheus 的
+     * {@code increase(...[window])} 缺少错误前的 0 样本，可能漏掉
+     * 第一项认证失败。这里的组合全部来自有限枚举，基数有严格上界。
+     */
+    private void preRegisterModelCallSeries() {
+        for (AgentModelProvider provider
+                : AgentModelProvider.values()) {
+            registerModelTimer(
+                    provider.name(),
+                    OUTCOME_SUCCESS,
+                    ERROR_CATEGORY_NONE
+            );
+
+            for (ChatModelErrorCategory category
+                    : ChatModelErrorCategory.values()) {
+                registerModelTimer(
+                        provider.name(),
+                        OUTCOME_FAILURE,
+                        errorCategoryTag(category)
+                );
+            }
+        }
+    }
+
+    private void registerModelTimer(
+            String provider,
+            String outcome,
+            String errorCategory
+    ) {
+        try {
+            registry.timer(
+                    MODEL_CALL_METRIC,
+                    TAG_PROVIDER, provider,
+                    TAG_OUTCOME, outcome,
+                    TAG_ERROR_CATEGORY, errorCategory
+            );
+        } catch (RuntimeException ignored) {
+            // 指标预注册失败同样不得阻止应用启动或业务调用。
+        }
     }
 
     /**
