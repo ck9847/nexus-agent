@@ -22,20 +22,22 @@ RUN ./mvnw --batch-mode --no-transfer-progress \
     -pl nexus-bootstrap -am package -DskipTests
 
 # ---- Runtime stage ----
-FROM eclipse-temurin:21-jre-jammy AS runtime
+# Alpine 变体：更小的 OS 包面（供应链扫描面显著降低），busybox
+# 自带 wget 供健康检查使用，无需 apt 安装 curl。
+FROM eclipse-temurin:21-jre-alpine AS runtime
 
-# curl 供 Docker 健康检查使用；安装后清理缓存以减小镜像体积。
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# 创建非 root 用户运行应用。
-RUN useradd --system --uid 10001 --create-home appuser
+# 创建非 root 用户运行应用；同时把基础镜像内的系统包升级到
+# 已修复 CVE 的补丁版本（供应链扫描门禁要求 HIGH/CRITICAL 为 0）。
+RUN apk upgrade --no-cache \
+    && addgroup -S -g 10001 appgroup \
+    && adduser -S -u 10001 -G appgroup appuser
 
 WORKDIR /app
 
+# jar 名随版本变化（SNAPSHOT 或发布 tag 经 versions:set 去掉后缀），
+# 以通配符匹配；package 产物只有主 jar，无 .original 扩展名冲突。
 COPY --from=build \
-    /workspace/nexus-bootstrap/target/nexus-bootstrap-0.1.0-SNAPSHOT.jar \
+    /workspace/nexus-bootstrap/target/nexus-bootstrap-*.jar \
     /app/app.jar
 
 USER appuser

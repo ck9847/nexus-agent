@@ -88,6 +88,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # 镜像内的 jar 版本必须与 Release 版本一致：Docker 构建在
+      # 容器内重新执行 Maven，因此这里对检出源注入同样的版本，
+      # 而不是复用 build job 的工作区。
+      - name: Set project version (build-time only)
+        run: |
+          cd backend
+          ./mvnw --batch-mode --no-transfer-progress \
+            versions:set -DnewVersion="${{ needs.build.outputs.version }}" \
+            versions:commit
+
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
