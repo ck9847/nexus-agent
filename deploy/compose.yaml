@@ -97,6 +97,36 @@ services:
       - nexus-network
 
   # ---------------------------------------------------------------------
+  # Mock 模型供应商（`--profile mock-provider` 启用）
+  #
+  # 本地零成本演示用：OpenAI 兼容 SSE mock（对含 tools 的请求
+  # 返回 create_ticket 工具调用，否则返回确定性文本），配合
+  # scripts/demo.ps1 -UseMockProvider 完整跑通 SSE 建单闭环，
+  # 无需真实 API key。
+  # ---------------------------------------------------------------------
+  openai-mock:
+    image: node:22-alpine
+    container_name: nexus-agent-openai-mock
+    restart: unless-stopped
+
+    profiles:
+      - mock-provider
+
+    command: node /mock/openai-mock.mjs
+    working_dir: /mock
+
+    environment:
+      PORT: 8080
+      CHUNK_DELAY_MS: ${MOCK_CHUNK_DELAY_MS:-5}
+      TEXT_CHUNKS: ${MOCK_TEXT_CHUNKS:-8}
+
+    volumes:
+      - ../loadtest/mock:/mock:ro
+
+    networks:
+      - nexus-network
+
+  # ---------------------------------------------------------------------
   # Observability（`--profile observability` 启用）
   # ---------------------------------------------------------------------
   prometheus:

@@ -55,8 +55,9 @@ jobs:
         uses: actions/checkout@v6
 
       # ------------------------------------------------------------------
-      # 1. docker compose 配置校验（默认与 observability profile）。
-      # 只做语法/变量插值校验，不启动任何容器；必需变量用 CI 假值。
+      # 1. docker compose 配置校验（默认与 observability /
+      #    mock-provider profile）。只做语法/变量插值校验，不启动
+      #    任何容器；必需变量用 CI 假值。
       # ------------------------------------------------------------------
       - name: Validate docker compose config
         working-directory: deploy
@@ -72,7 +73,8 @@ jobs:
         run: |
           docker compose config --quiet
           docker compose --profile observability config --quiet
-          echo "compose config OK (default + observability profile)"
+          docker compose --profile mock-provider config --quiet
+          echo "compose config OK (default + observability + mock-provider profiles)"
 
       # promtool 需要 password_file 真实存在；CI 里用一次性假密钥，
       # 绝不复用真实凭据，也绝不写入任何仓库文件。

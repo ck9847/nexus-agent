@@ -4,9 +4,17 @@ param(
 
     [string]$AgentCode = "support-agent",
 
-    [Parameter(Mandatory = $true)]
+    # 真实供应商演示时必填（如 gpt-4o-mini）；
+    # -UseMockProvider 下有默认值，可省略。
+    [Parameter(Mandatory = $true, ParameterSetName = "RealProvider")]
     [ValidateNotNullOrEmpty()]
     [string]$ModelName,
+
+    # 零成本本地演示：启用 compose 的 mock-provider profile，
+    # 模型网关指向内置 OpenAI 兼容 mock，无需 API key 即可
+    # 完整跑通 SSE 建单闭环。
+    [Parameter(ParameterSetName = "MockProvider")]
+    [switch]$UseMockProvider,
 
     [switch]$SkipStream
 )
@@ -39,10 +47,11 @@ function Invoke-NexusJson {
     }
 
     $request = @{
-        Method      = $Method
-        Uri         = "$BaseUrl$Path"
-        Headers     = $headers
-        ErrorAction = "Stop"
+        Method          = $Method
+        Uri             = "$BaseUrl$Path"
+        Headers         = $headers
+        ErrorAction     = "Stop"
+        UseBasicParsing = $true
     }
 
     if ($null -ne $Body) {
@@ -50,7 +59,14 @@ function Invoke-NexusJson {
         $request.Body = $Body | ConvertTo-Json -Depth 20 -Compress
     }
 
-    Invoke-RestMethod @request
+    # Windows PowerShell 5.1 对不带 charset 的 JSON 响应默认按
+    # Latin-1 解码，中文会变成乱码；这里显式按 UTF-8 解析。
+    $response = Invoke-WebRequest @request
+
+    $bytes = $response.RawContentStream.ToArray()
+
+    return [Text.Encoding]::UTF8.GetString($bytes) |
+        ConvertFrom-Json
 }
 
 function Wait-NexusReadiness {
@@ -92,6 +108,22 @@ if (-not (Test-Path -LiteralPath $envFile)) {
     throw ".env was not found. Copy .env.example to .env and configure it first."
 }
 
+# Mock 模式：模型网关指向 compose 内置的 OpenAI 兼容 mock。
+# 进程环境变量优先级高于 --env-file，离开脚本作用域即失效，
+# 不污染用户的 .env。
+$composeProfiles = @()
+if ($UseMockProvider) {
+    if ([string]::IsNullOrWhiteSpace($ModelName)) {
+        $ModelName = "mock-model"
+    }
+
+    $env:NEXUS_OPENAI_ENABLED = "true"
+    $env:NEXUS_OPENAI_BASE_URL = "http://openai-mock:8080/v1"
+    $env:OPENAI_API_KEY = "local-demo-mock"
+
+    $composeProfiles = @("--profile", "mock-provider")
+}
+
 $BaseUrl = $BaseUrl.TrimEnd("/")
 $suffix = "{0}-{1}" -f `
     [DateTimeOffset]::UtcNow.ToUnixTimeSeconds(), `
@@ -107,6 +139,7 @@ try {
     & docker compose `
         --env-file $envFile `
         -f $composeFile `
+        @composeProfiles `
         up -d --build --wait --wait-timeout 240
 
     if ($LASTEXITCODE -ne 0) {
