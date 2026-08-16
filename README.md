@@ -1,8 +1,22 @@
 # NexusAgent
 
+[![CI](https://github.com/ck9847/nexus-agent/actions/workflows/backend-ci.yml/badge.svg)](https://github.com/ck9847/nexus-agent/actions/workflows/backend-ci.yml)
+[![Release](https://github.com/ck9847/nexus-agent/actions/workflows/release.yml/badge.svg)](https://github.com/ck9847/nexus-agent/actions/workflows/release.yml)
+[![GitHub release](https://img.shields.io/github/v/release/ck9847/nexus-agent)](https://github.com/ck9847/nexus-agent/releases)
+
 NexusAgent 是一个多租户企业智能工单 Agent 平台。用户通过自然语言描述问题，系统以 SSE 流式调用 OpenAI-compatible 模型；当模型决定调用 `create_ticket` 时，后端会校验参数、幂等执行工具、创建真实工单，并持久化完整的会话、工具执行和安全审计记录。
 
-> 当前版本：V0.1。核心闭环、生产运行镜像和自动化测试均已完成。
+> 当前版本：V0.1。核心闭环、生产运行镜像、端到端可观测性、
+> 弹性保护（限流/熔断/安全重试/幂等）与压测证明均已完成。
+
+## 在线演示
+
+- 演示地址：**<部署后填写>**（部署方式见
+  [`deploy/demo/`](deploy/demo/README.md)，一键脚本
+  `scripts/deploy-demo.ps1`）
+- 演示流程：`scripts/demo.ps1 -BaseUrl <演示地址>` 会 bootstrap
+  一个独立演示租户、激活 Agent、发起一次 SSE 建单对话并查询工单
+- 未配置真实模型供应商时可用 `-SkipStream` 验证认证/工单/审计链路
 
 ## 核心链路
 
@@ -31,6 +45,8 @@ flowchart LR
 ## 主要能力
 
 - 多租户 Tenant、User、Role 与 JWT 身份认证
+- tenant/user 两级限流（429 + Retry-After）、模型供应商熔断、
+  "首个模型事件前"安全重试、`Idempotency-Key` 防重复建单
 - ADMIN 管理 Agent 配置及状态生命周期
 - Conversation 创建、详情、游标分页消息历史
 - SSE 流式 Agent 对话与客户端断连处理
@@ -40,6 +56,29 @@ flowchart LR
 - Ticket 创建、查询、游标分页及乐观锁状态流转
 - 业务写入与 AuditLog 同事务提交、失败自动回滚
 - Docker Compose 一键运行、健康探针和 graceful shutdown
+
+## 部署架构
+
+```mermaid
+flowchart LR
+    subgraph release["Release pipeline (tag v* 驱动)"]
+        B["Maven build"] --> I["docker build"]
+        I --> G[("GHCR 镜像")]
+        I --> S["cosign 签名 + SBOM"]
+        I --> T["Trivy 依赖/镜像扫描"]
+        S --> R["GitHub Release"]
+    end
+    G --> D["演示服务器 (deploy/demo)"]
+    subgraph demo["compose.demo"]
+        C["Caddy (自动 TLS)"] --> APP["nexus-agent (GHCR 镜像)"]
+        APP --> M[("MySQL 8.4")]
+    end
+    D --- demo
+```
+
+本地/自托管同样支持 `deploy/compose.yaml`（含可选 Prometheus +
+Grafana observability profile，见
+[运维手册](docs/operations-runbook.md)）。
 
 ## 技术栈
 
@@ -51,6 +90,10 @@ flowchart LR
 | 数据访问 | MyBatis、MySQL 8.4、HikariCP |
 | 数据库迁移 | Flyway |
 | 模型接入 | OpenAI-compatible streaming API |
+| 弹性 | Resilience4j（限流/熔断/退避重试） |
+| 可观测 | Micrometer、Prometheus、Grafana |
+| 压测 | k6（smoke/ramp/idempotency 场景） |
+| 供应链 | cosign 签名、CycloneDX SBOM、Trivy 扫描 |
 | 测试 | JUnit 5、Mockito、Testcontainers |
 | 构建与交付 | Maven Wrapper、Docker、Docker Compose、GitHub Actions |
 
@@ -209,5 +252,8 @@ GitHub Actions 会在 pull request 和 `main` push 时执行 Maven verify，并�
 ## 更多文档
 
 - [Architecture](docs/architecture.md)：模块、事务、并发和工具调用设计
+- [Operations runbook](docs/operations-runbook.md)：生产运维与事故响应手册
+- [Performance report](docs/performance-report.md)：压测吞吐/P95/P99 与幂等并发证明
+- [Changelog](CHANGELOG.md) / [Security policy](SECURITY.md)
 - [API examples](docs/api-examples.http)：可直接执行的 HTTP 请求
 - [Requirements](docs/requirements.md)：V0.1 原始目标与验收标准

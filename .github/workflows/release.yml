@@ -1,0 +1,208 @@
+# Release & supply-chain pipeline.
+#
+# Triggered by version tags (v0.1.0). Per-job least-privilege
+# permissions; main 上保持 0.1.0-SNAPSHOT，发布版本只在构建期
+# 通过 versions:set 注入，不产生提交。
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+      - 'v*.*.*-*'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Build and scan only (no publish, no release)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    name: Build (Java 21)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Resolve release version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="0.1.0-${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set project version (build-time only)
+        run: |
+          cd backend
+          ./mvnw --batch-mode --no-transfer-progress \
+            versions:set -DnewVersion="${{ steps.version.outputs.version }}" \
+            versions:commit
+
+      - name: Build boot jar
+        run: |
+          cd backend
+          ./mvnw --batch-mode --no-transfer-progress \
+            -pl nexus-bootstrap -am package -DskipTests
+
+      - name: Upload jar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexus-agent-${{ steps.version.outputs.version }}
+          path: backend/nexus-bootstrap/target/nexus-bootstrap-*.jar
+          if-no-files-found: error
+
+  publish-image:
+    name: Publish image (GHCR + provenance + cosign)
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+      packages: write
+      id-token: write   # keyless cosign signing via Sigstore OIDC
+    if: ${{ !inputs.dry-run }}
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: false  # CycloneDX SBOM 由 release job 单独产出并附到 Release
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image digest (keyless)
+        run: |
+          cosign sign --yes \
+            "${IMAGE_NAME}@${{ steps.push.outputs.digest }}"
+
+  scan-dependencies:
+    name: Scan dependencies (Trivy)
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+      security-events: write   # SARIF -> GitHub Security tab
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy fs scan (vuln + secret)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-deps.sarif
+          exit-code: '1'
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-deps.sarif
+
+  scan-image:
+    name: Scan image (Trivy)
+    runs-on: ubuntu-latest
+    needs: publish-image
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}@${{ needs.publish-image.outputs.digest }}
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-image.sarif
+          exit-code: '1'
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+
+  release:
+    name: GitHub Release (SBOM + jar)
+    runs-on: ubuntu-latest
+    needs: [build, publish-image, scan-dependencies, scan-image]
+    permissions:
+      contents: write   # 创建 Release
+    if: ${{ !inputs.dry-run }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download jar
+        uses: actions/download-artifact@v4
+        with:
+          name: nexus-agent-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Generate CycloneDX SBOM (filesystem)
+        uses: anchore/sbom-action@v0
+        with:
+          format: cyclonedx-json
+          artifact-name: nexus-agent-${{ needs.build.outputs.version }}-sbom.json
+          upload-release-assets: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.jar
+          generate_release_notes: true
+          fail_on_unmatched_files: true
