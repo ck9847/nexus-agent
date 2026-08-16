@@ -44,3 +44,124 @@ jobs:
       - name: Build application container
         working-directory: ${{ github.workspace }}
         run: docker build --file backend/Dockerfile --tag nexus-agent:test backend
+
+  observability-config:
+    name: Observability config checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      # ------------------------------------------------------------------
+      # 1. docker compose 配置校验（默认与 observability profile）。
+      # 只做语法/变量插值校验，不启动任何容器；必需变量用 CI 假值。
+      # ------------------------------------------------------------------
+      - name: Validate docker compose config
+        working-directory: deploy
+        env:
+          NEXUS_JWT_SECRET: Y2ktZHVtbXktand0LXNlY3JldC1mb3ItY29tcG9zZS1jaGVjaw==
+          MYSQL_DATABASE: nexus_agent
+          MYSQL_USER: nexus_app
+          MYSQL_PASSWORD: ci-dummy
+          MYSQL_ROOT_PASSWORD: ci-dummy
+          NEXUS_METRICS_SCRAPE_ENABLED: "true"
+          NEXUS_METRICS_USERNAME: prometheus
+          NEXUS_METRICS_PASSWORD: ci-dummy-password-0123456789abcdef
+        run: |
+          docker compose config --quiet
+          docker compose --profile observability config --quiet
+          echo "compose config OK (default + observability profile)"
+
+      # promtool 需要 password_file 真实存在；CI 里用一次性假密钥，
+      # 绝不复用真实凭据，也绝不写入任何仓库文件。
+      - name: Create throwaway metrics scrape secret for promtool
+        run: |
+          mkdir -p /tmp/nexus-ci-secrets
+          printf '%s' 'ci-dummy-password-0123456789abcdef' \
+            > /tmp/nexus-ci-secrets/metrics_scrape_password
+
+      # 镜像版本与 deploy/compose.yaml 中的 prometheus 服务保持一致；
+      # 升级时两边同步修改。
+      - name: Validate Prometheus config with promtool
+        run: >
+          docker run --rm --entrypoint promtool
+          -v "${{ github.workspace }}/deploy/observability/prometheus:/etc/prometheus:ro"
+          -v /tmp/nexus-ci-secrets:/run/secrets:ro
+          prom/prometheus:v3.13.2
+          check config /etc/prometheus/prometheus.yml
+
+      - name: Validate Prometheus rules with promtool
+        run: >
+          docker run --rm --entrypoint promtool
+          -v "${{ github.workspace }}/deploy/observability/prometheus:/etc/prometheus:ro"
+          prom/prometheus:v3.13.2
+          check rules
+          /etc/prometheus/recording-rules.yml
+          /etc/prometheus/alert-rules.yml
+
+      - name: Validate Grafana dashboard JSON syntax
+        run: |
+          jq empty \
+            deploy/observability/grafana/dashboards/nexus-agent-overview.json
+          echo "dashboard JSON parses"
+
+      # 变量白名单：instance / provider / outcome / error_category。
+      # 禁止 tenant、user、conversation、message、ticket 等任何
+      # 高基数变量。
+      - name: Assert dashboard variables match low-cardinality allowlist
+        run: |
+          dashboard=deploy/observability/grafana/dashboards/nexus-agent-overview.json
+
+          variables="$(jq -r '.templating.list[].name' "$dashboard" | sort)"
+          expected="$(printf 'error_category\ninstance\noutcome\nprovider\n' | sort)"
+
+          echo "dashboard variables: $variables"
+
+          if [ "$variables" != "$expected" ]; then
+            echo "::error::dashboard template variables must be exactly"
+            echo "::error::instance/provider/outcome/error_category"
+            exit 1
+          fi
+
+      # Dashboard 与规则文件不得出现租户/用户/会话/消息/工单/请求级
+      # 标签名。prometheus.yml 被有意排除：其 labeldrop 列表里
+      # 恰好写着这些要丢弃的名字。
+      - name: Assert no high-cardinality labels in dashboard or rules
+        run: |
+          if grep -Eiq \
+            'tenant[_]?id|user[_]?id|conversation[_]?id|message[_]?id|ticket[_]?id|request[_]?id|trace[_]?id|client[_]?ip|ip[_]?address' \
+            deploy/observability/grafana/dashboards/*.json \
+            deploy/observability/prometheus/recording-rules.yml \
+            deploy/observability/prometheus/alert-rules.yml; then
+            echo "::error::high-cardinality label names found in the files above"
+            exit 1
+          fi
+
+          echo "no high-cardinality labels in dashboard or rules"
+
+      # 密码文件绝不进 Git：deploy/secrets/ 只允许提交 .gitkeep；
+      # 同时校验忽略规则本身（密码被忽略、.gitkeep 不被忽略）。
+      - name: Assert secrets directory hygiene in Git
+        run: |
+          tracked="$(git ls-files deploy/secrets)"
+
+          echo "tracked files under deploy/secrets: $tracked"
+
+          if [ "$tracked" != "deploy/secrets/.gitkeep" ]; then
+            echo "::error::deploy/secrets may only contain .gitkeep in Git"
+            exit 1
+          fi
+
+          if ! git check-ignore -q deploy/secrets/metrics_scrape_password; then
+            echo "::error::deploy/secrets/metrics_scrape_password must be git-ignored"
+            exit 1
+          fi
+
+          if git check-ignore -q deploy/secrets/.gitkeep; then
+            echo "::error::deploy/secrets/.gitkeep must not be git-ignored"
+            exit 1
+          fi
+
+          echo "secrets hygiene OK"
