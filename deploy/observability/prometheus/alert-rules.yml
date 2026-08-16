@@ -1,0 +1,142 @@
+# Nexus Agent 告警规则。
+#
+# 每条规则固定包含：
+#   - labels.severity            严重级别
+#   - annotations.summary        一句话摘要
+#   - annotations.description    展开描述（只引用低基数标签）
+#   - annotations.runbook_url    对应 runbook 路径（repo 相对路径，
+#                                见同目录 README.md 的解析约定）
+#   - for                        触发持续时间
+#
+# 指标源说明：
+#   - up{}                                          抓取健康（Prometheus 内置）
+#   - http_server_requests_seconds_*                HTTP 观测
+#   - nexus_conversation_turn_seconds_*             会话 turn
+#   - nexus_model_call_seconds_*                    模型调用
+#     （error_category: RATE_LIMIT/AUTHENTICATION/TIMEOUT/
+#      PROVIDER_ERROR/MALFORMED_RESPONSE/STREAM_INTERRUPTED）
+#   - nexus_tool_execution_total                    工具执行
+#   - nexus_sse_connections_active                  活跃 SSE 连接 gauge
+#   - nexus_sse_connections_capacity_rejected_total 线程池拒绝计数器
+#   - hikaricp_connections_pending                  连接池等待连接数
+#   - jvm_memory_used_bytes / jvm_memory_max_bytes   JVM 堆内存
+
+groups:
+  - name: nexus-agent-alerts
+    rules:
+      - alert: NexusAgentDown
+        expr: up{job="nexus-agent"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Nexus Agent 实例抓取失败"
+          description: "Prometheus 已连续 1 分钟无法抓取 {{ $labels.instance }} 的 /actuator/prometheus，实例可能宕机或指标端点不可达。"
+          runbook_url: https://github.com/ck9847/nexus-agent/blob/main/docs/runbooks/NexusAgentDown.md
+
+      - alert: HighHttp5xxRate
+        expr: nexus:http_5xx_ratio:5m > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HTTP 5xx 比例超过 5%"
+          description: "{{ $labels.instance }} 的 5 分钟滚动 5xx 比例为 {{ $value | humanizePercentage }}，高于 5% 阈值，可能影响租户请求。"
+          runbook_url: https://github.com/ck9847/nexus-agent/blob/main/docs/runbooks/HighHttp5xxRate.md
+
+      - alert: HighConversationTurnFailureRate
+        expr: nexus:turn_failure_ratio:5m > 0.10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "会话 turn 失败率超过 10%"
+          description: "{{ $labels.instance }} 的 5 分钟滚动 turn 失败率为 {{ $value | humanizePercentage }}，高于 10% 阈值（含 MODEL_FAILED/TOOL_FAILED/CLIENT_DISCONNECTED/INTERNAL_FAILED）。"
+          runbook_url: https://github.com/ck9847/nexus-agent/blob/main/docs/runbooks/HighConversationTurnFailureRate.md
+
+      - alert: ModelRateLimitSpike
+        expr: |
+          sum by (instance, provider) (
+            rate(nexus_model_call_seconds_count{outcome="failure", error_category="RATE_LIMIT"}[5m])
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "模型提供方限流异常升高"
+          description: "{{ $labels.instance }} 上 provider={{ $labels.provider }} 的模型限流失败速率连续 5 分钟超过 0.05/秒（约 15 次/5 分钟）。"
+          runbook_url: https://github.com/ck9847/nexus-agent/blob/main/docs/runbooks/ModelRateLimitSpike.md
+
+      - alert: ModelAuthenticationFailure
+        expr: |
+          sum by (instance, provider) (
+            increase(nexus_model_call_seconds_count{outcome="failure", error_category="AUTHENTICATION"}[10m])
+          ) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "模型提供方认证失败"
+          description: "{{ $labels.instance }} 上 provider={{ $labels.provider }} 在最近 10 分钟出现认证失败，凭据可能已失效或配置错误。"
+          runbook_url: https://github.com/ck9847/nexus-agent/blob/main/docs/runbooks/ModelAuthenticationFailure.md
+
+      - alert: ToolExecutionFailureSpike
+        expr: |
+          sum by (instance, tool) (
+            rate(nexus_tool_execution_total{outcome=~"FAILED|CONFLICT"}[5m])
+          ) > 0.02
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "工具执行失败率异常升高"
+          description: "{{ $labels.instance }} 上 tool={{ $labels.tool }} 的失败速率（FAILED/CONFLICT）连续 5 分钟超过 0.02/秒（约 6 次/5 分钟）。"
+          runbook_url: https://github.com/ck9847/nexus-agent/blob/main/docs/runbooks/ToolExecutionFailureSpike.md
+
+      - alert: SseCapacityRejected
+        expr: |
+          sum by (instance) (
+            increase(nexus_sse_connections_capacity_rejected_total[10m])
+          ) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SSE 线程池容量拒绝"
+          description: "{{ $labels.instance }} 在最近 10 分钟拒绝了新的 SSE 流任务，流式线程池已饱和（core/max/queue 配置见 nexus.conversation.streaming）。"
+          runbook_url: https://github.com/ck9847/nexus-agent/blob/main/docs/runbooks/SseCapacityRejected.md
+
+      - alert: SseActiveConnectionLeakSuspected
+        expr: max by (instance) (nexus_sse_connections_active) > 50
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "疑似 SSE 连接泄漏"
+          description: "{{ $labels.instance }} 的活跃 SSE 连接数连续 30 分钟超过 50，可能由客户端断连未被释放导致连接泄漏。"
+          runbook_url: https://github.com/ck9847/nexus-agent/blob/main/docs/runbooks/SseActiveConnectionLeakSuspected.md
+
+      - alert: HikariConnectionPoolExhaustion
+        expr: max by (instance, pool) (hikaricp_connections_pending) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Hikari 连接池接近耗尽"
+          description: "{{ $labels.instance }} 的 pool={{ $labels.pool }} 连续 5 分钟有超过 3 个线程等待数据库连接，可能由慢查询或事务泄漏导致。"
+          runbook_url: https://github.com/ck9847/nexus-agent/blob/main/docs/runbooks/HikariConnectionPoolExhaustion.md
+
+      - alert: JvmHeapUsageHigh
+        expr: |
+          (
+            sum by (instance) (jvm_memory_used_bytes{area="heap"})
+            /
+            sum by (instance) (jvm_memory_max_bytes{area="heap"})
+          ) > 0.9
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "JVM 堆使用率超过 90%"
+          description: "{{ $labels.instance }} 的堆使用率连续 5 分钟超过 90%（当前 {{ $value | humanizePercentage }}），存在 OOM 风险。"
+          runbook_url: https://github.com/ck9847/nexus-agent/blob/main/docs/runbooks/JvmHeapUsageHigh.md

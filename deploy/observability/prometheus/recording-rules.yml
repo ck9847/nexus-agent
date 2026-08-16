@@ -1,0 +1,87 @@
+# Nexus Agent 记录规则：把高频查询与重聚合预计算为
+# 低基数时间序列，供 Grafana 面板与告警规则直接引用。
+#
+# 命名约定：nexus:<语义>:<窗口>
+# 指标源（应用实际暴露名称，点号转下划线）：
+#   - http_server_requests_seconds_*       Spring Boot HTTP 观测
+#   - nexus_conversation_turn_seconds_*    会话 turn 计时器（outcome 标签）
+#   - nexus_model_call_seconds_*           模型调用计时器（outcome/error_category）
+#   - nexus_tool_execution_total           create_ticket 工具执行计数器（outcome）
+
+groups:
+  - name: nexus-recording-rules
+    rules:
+      # HTTP 5xx 比例（5 分钟滚动窗口）。
+      - record: nexus:http_5xx_ratio:5m
+        expr: |
+          sum by (instance, job) (
+            rate(http_server_requests_seconds_count{job="nexus-agent", status=~"5.."}[5m])
+          )
+          /
+          sum by (instance, job) (
+            rate(http_server_requests_seconds_count{job="nexus-agent"}[5m])
+          )
+
+      # HTTP 响应 P95（秒）。
+      - record: nexus:http_p95_seconds:5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, instance, job) (
+              rate(http_server_requests_seconds_bucket{job="nexus-agent"}[5m])
+            )
+          )
+
+      # 会话 turn 失败比例：失败 outcome =
+      # MODEL_FAILED / TOOL_FAILED / CLIENT_DISCONNECTED / INTERNAL_FAILED。
+      - record: nexus:turn_failure_ratio:5m
+        expr: |
+          sum by (instance, job) (
+            rate(nexus_conversation_turn_seconds_count{outcome=~"MODEL_FAILED|TOOL_FAILED|CLIENT_DISCONNECTED|INTERNAL_FAILED"}[5m])
+          )
+          /
+          sum by (instance, job) (
+            rate(nexus_conversation_turn_seconds_count[5m])
+          )
+
+      # 会话 turn 耗时 P95（秒）。
+      - record: nexus:turn_p95_seconds:5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(nexus_conversation_turn_seconds_bucket[5m])
+            )
+          )
+
+      # 模型调用失败比例（outcome=failure）。
+      - record: nexus:model_failure_ratio:5m
+        expr: |
+          sum by (instance, job) (
+            rate(nexus_model_call_seconds_count{outcome="failure"}[5m])
+          )
+          /
+          sum by (instance, job) (
+            rate(nexus_model_call_seconds_count[5m])
+          )
+
+      # 模型调用耗时 P95（秒）。
+      - record: nexus:model_p95_seconds:5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(nexus_model_call_seconds_bucket[5m])
+            )
+          )
+
+      # 工具执行失败比例：失败 outcome = FAILED / CONFLICT。
+      - record: nexus:tool_failure_ratio:5m
+        expr: |
+          sum by (instance, job) (
+            rate(nexus_tool_execution_total{outcome=~"FAILED|CONFLICT"}[5m])
+          )
+          /
+          sum by (instance, job) (
+            rate(nexus_tool_execution_total[5m])
+          )
