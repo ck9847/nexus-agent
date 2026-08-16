@@ -14,8 +14,9 @@ public record RegisterToolExecutionResult(
         Instant createdAt
 ) {
 
+    // 派生键 tool:v1:{hash} 与客户端轮次键 tool:turn:v1:{hash}。
     private static final Pattern KEY_PATTERN =
-            Pattern.compile("tool:v1:[0-9a-f]{64}");
+            Pattern.compile("tool:(turn:)?v1:[0-9a-f]{64}");
 
     public RegisterToolExecutionResult {
         if (toolExecutionId <= 0) {

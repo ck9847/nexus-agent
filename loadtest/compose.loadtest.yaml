@@ -1,0 +1,103 @@
+# Load-test stack: app (pointed at the OpenAI mock) + MySQL + Prometheus.
+# Started by scripts/run-loadtest.ps1; not used in production.
+name: nexus-agent-loadtest
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: nexus-loadtest-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: loadtest-root
+      MYSQL_DATABASE: nexus_agent
+      MYSQL_USER: nexus_app
+      MYSQL_PASSWORD: loadtest-app
+    ports:
+      - "127.0.0.1:3399:3306"
+    volumes:
+      - loadtest-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -pnexus_app --silent"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+    networks:
+      - loadtest-network
+
+  openai-mock:
+    image: node:22-alpine
+    container_name: nexus-loadtest-openai-mock
+    command: node /mock/openai-mock.mjs
+    working_dir: /mock
+    environment:
+      PORT: 8080
+      CHUNK_DELAY_MS: ${MOCK_CHUNK_DELAY_MS:-5}
+      FAIL_FIRST_N: ${MOCK_FAIL_FIRST_N:-0}
+      TEXT_CHUNKS: ${MOCK_TEXT_CHUNKS:-8}
+    volumes:
+      - ./mock:/mock:ro
+    networks:
+      - loadtest-network
+
+  app:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: nexus-loadtest-app
+    depends_on:
+      mysql:
+        condition: service_healthy
+      openai-mock:
+        condition: service_started
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: nexus_agent
+      MYSQL_USER: nexus_app
+      MYSQL_PASSWORD: loadtest-app
+      SERVER_PORT: 8080
+      NEXUS_JWT_SECRET: bG9hZHRlc3Qtand0LXNlY3JldC0wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZg==
+      NEXUS_OPENAI_ENABLED: "true"
+      NEXUS_OPENAI_BASE_URL: http://openai-mock:8080/v1
+      OPENAI_API_KEY: loadtest-dummy-key
+      NEXUS_OPENAI_CONNECT_TIMEOUT: 5s
+      NEXUS_OPENAI_READ_TIMEOUT: 60s
+      # 容量与弹性参数：压测期间显式放大/收紧，全部可从环境覆盖。
+      NEXUS_CONVERSATION_STREAM_CORE_POOL_SIZE: ${LOADTEST_CORE_POOL:-8}
+      NEXUS_CONVERSATION_STREAM_MAX_POOL_SIZE: ${LOADTEST_MAX_POOL:-32}
+      NEXUS_CONVERSATION_STREAM_QUEUE_CAPACITY: ${LOADTEST_QUEUE:-200}
+      NEXUS_RATE_LIMIT_ENABLED: ${LOADTEST_RATE_LIMIT_ENABLED:-true}
+      NEXUS_RATE_LIMIT_TENANT_LIMIT: ${LOADTEST_TENANT_LIMIT:-1000000}
+      NEXUS_RATE_LIMIT_USER_LIMIT: ${LOADTEST_USER_LIMIT:-1000000}
+      NEXUS_RATE_LIMIT_TENANT_REFRESH: 10s
+      NEXUS_RATE_LIMIT_USER_REFRESH: 10s
+      NEXUS_HIKARI_MAX_POOL_SIZE: ${LOADTEST_HIKARI_MAX:-20}
+      NEXUS_METRICS_SCRAPE_ENABLED: "true"
+      NEXUS_METRICS_USERNAME: prometheus
+      NEXUS_METRICS_PASSWORD: loadtest-metrics-password-0123456789abcdef
+    ports:
+      - "127.0.0.1:18090:8080"
+    networks:
+      - loadtest-network
+
+  prometheus:
+    image: prom/prometheus:v3.13.2
+    container_name: nexus-loadtest-prometheus
+    depends_on:
+      app:
+        condition: service_started
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+    ports:
+      - "127.0.0.1:19090:9090"
+    networks:
+      - loadtest-network
+
+volumes:
+  loadtest-mysql-data:
+
+networks:
+  loadtest-network:
+    name: nexus-loadtest-network

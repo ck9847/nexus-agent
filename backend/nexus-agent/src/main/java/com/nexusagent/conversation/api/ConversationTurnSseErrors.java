@@ -2,6 +2,7 @@ package com.nexusagent.conversation.api;
 
 import com.nexusagent.agent.api.AgentNotFoundException;
 import com.nexusagent.model.api.ChatModelException;
+import com.nexusagent.tool.api.ToolExecutionIdempotencyConflictException;
 
 import java.util.Objects;
 
@@ -55,6 +56,18 @@ final class ConversationTurnSseErrors {
             return fixed(
                     "ACTIVE_AGENT_NOT_FOUND",
                     "Active Agent not found",
+                    false
+            );
+        }
+
+        if (failure instanceof
+                ToolExecutionIdempotencyConflictException) {
+            // 同一 Idempotency-Key 的重复轮次：工具执行已被
+            // 原始请求持有，重放以显式冲突结束。
+            return fixed(
+                    "TOOL_EXECUTION_IDEMPOTENCY_CONFLICT",
+                    "A turn with the same Idempotency-Key has " +
+                            "already created this ticket",
                     false
             );
         }
