@@ -151,16 +151,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 直接使用 trivy 二进制而非 trivy-action 包装：
+      # 退出码语义与本地复现完全一致（发现 >=1 条即非零）。
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin v0.70.0
+
       - name: Trivy fs scan (vuln + secret)
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          scanners: vuln,secret
-          severity: HIGH,CRITICAL
-          format: sarif
-          output: trivy-deps.sarif
-          exit-code: '1'
+        run: |
+          trivy fs --scanners vuln,secret \
+            --severity HIGH,CRITICAL \
+            --format sarif --output trivy-deps.sarif \
+            --exit-code 1 .
 
       - name: Upload SARIF
         if: always()
@@ -174,16 +177,32 @@ jobs:
     needs: publish-image
     permissions:
       contents: read
+      packages: read
       security-events: write
     steps:
-      - name: Trivy image scan
-        uses: aquasecurity/trivy-action@v0.36.0
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          image-ref: ${{ env.IMAGE_NAME }}@${{ needs.publish-image.outputs.digest }}
-          severity: HIGH,CRITICAL
-          format: sarif
-          output: trivy-image.sarif
-          exit-code: '1'
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull image for local scan
+        run: |
+          docker pull "${IMAGE_NAME}@${{ needs.publish-image.outputs.digest }}"
+
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin v0.70.0
+
+      - name: Trivy image scan
+        run: |
+          trivy image \
+            --severity HIGH,CRITICAL \
+            --format sarif --output trivy-image.sarif \
+            --exit-code 1 \
+            "${IMAGE_NAME}@${{ needs.publish-image.outputs.digest }}"
 
       - name: Upload SARIF
         if: always()
